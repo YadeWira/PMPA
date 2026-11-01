@@ -230,7 +230,9 @@ procedure CodeBytes(var m: TModel; var d: TBytes; first, len: Int64; cls: Intege
 var i: Int64; prev, node, k, x: Integer;
 begin
   if first > 0 then prev := d[first - 1] else prev := 0;
-  for i := first to first + len - 1 do
+  { a while loop: a 32-bit FreePascal has no Int64 loop counters }
+  i := first;
+  while i < first + len do
   begin
     x := d[i]; node := 1;
     for k := 7 downto 0 do
@@ -238,6 +240,7 @@ begin
     x := node - 256;
     d[i] := x;
     prev := x;
+    Inc(i);
   end;
 end;
 
