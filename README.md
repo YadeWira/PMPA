@@ -45,8 +45,7 @@ does about 3 MB/s. Built bottom-up, each layer with its tests:
 | version 4: Layer III mixed (values, signs, scalefactors), part2_3_length derived | `pas/pmpamodel.pas` | done |
 | version 5: Layer I and II (allocation, scale factors, samples) | `pas/pmpal12.pas` | done |
 | version 6: faster (contexts hashed once a value, verifying on a second thread) | | done |
-| Layer III's values in C (the same streams as the Pascal) | `pas/pmpal3c.c`, `pas/pmpac.pas` | done |
-| Layer I and II's samples in C | | next |
+| the models' hot loops in C, Layer III's values and Layer I and II's samples (the same streams as the Pascal) | `pas/pmpal3c.c`, `pas/pmpac.pas` | done |
 
 ## Building and testing
 

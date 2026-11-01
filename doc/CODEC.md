@@ -320,4 +320,9 @@ Measured on 01/11/2026 (clang 19, the same machine and load as before):
 | the same, extract | 9.8 s | 4.7 s |
 | the corpus's 24 MPEG files, 8 threads, compress / extract | 31.3 s / 10.5 s | 22.5 s / 6.3 s |
 
-Layer I and II's samples are still Pascal.
+Layer I and II's samples followed (`pmpac_samples`), the same way: on
+the 56 Layer I and II streams from samples.ffmpeg.org, 8 threads, compress
+20.6 s -> 13.3 s and extract 10.9 s -> 6.9 s; one 2 MB MP2 extracts in
+1.6 s instead of 2.8 s. The suite also checks that the C is in use where
+it is linked (a layout that does not match would leave every comparison
+comparing the Pascal with itself).

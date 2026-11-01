@@ -56,6 +56,10 @@ begin
     end;
   files.Sort;
 
+  { this program has the C (pmpac): it has to be in use, unless PMPA_NOC=1
+    asks for the Pascal (or the comparison of the two would compare the
+    Pascal with itself) }
+  Check(CInUse = (GetEnvironmentVariable('PMPA_NOC') <> '1'), 'the C in use, unless PMPA_NOC=1');
   Writeln('round trips');
   digest.Init;
   nOk := 0; nRefused := 0; inBytes := 0; outBytes := 0;

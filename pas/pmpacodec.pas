@@ -95,11 +95,24 @@ type
     dec: ^TDecC;
   end;
   TValuesFn = function(var s: TValuesC): LongInt; cdecl;
+  TSamplesC = record
+    smp, last, other, scf: PLongInt;
+    n, layer, levels, bits, mid, top, ci, sb, otherMid: LongInt;
+    vt: Pointer; vtMask: Cardinal;
+    w: PLongInt; inputs, rate: LongInt;
+    oddCode, fieldsOdd: Pointer;
+    decoding: LongInt;
+    enc: ^TEncC;
+    dec: ^TDecC;
+  end;
+  TSamplesFn = function(var s: TSamplesC): LongInt; cdecl;
 
 var
   { stream version 6's Layer III values in C (pmpac.pas sets it); nil: in
     Pascal. The streams are the same either way. }
   ValuesC: TValuesFn = nil;
+  { and Layer I and II's samples }
+  SamplesC: TSamplesFn = nil;
 
 { for the tests: the stream of d in an earlier version (1 to STREAM_VERSION),
   not verified; nil if d has no MPEG audio frame }
@@ -1284,6 +1297,53 @@ begin
   if v > 0 then Result := 8 + b else Result := 8 - b;
 end;
 
+{ version 6's samples of channel ch, subband sb, through pmpac.c: the same
+  as CodeL12Fields' loop }
+function SamplesRunC(var m: TModel; var f: TL12Frame; ch, sb, n, mid, top, ci: Integer;
+  const q: TQClass): Boolean;
+var a: TSamplesC; e: TEncC; dc: TDecC; ok: LongInt; qq: TQClass;
+begin
+  a := Default(TSamplesC);
+  a.smp := @f.smp[ch, sb, 0];
+  if m.lastL12.alloc[ch, sb] <> 0 then a.last := @m.lastL12.smp[ch, sb, 0] else a.last := nil;
+  if (ch = 1) and (f.alloc[0, sb] <> 0) then
+  begin
+    a.other := @f.smp[0, sb, 0];
+    if f.layer = 1 then a.otherMid := (1 shl f.alloc[0, sb]) - 1
+    else
+    begin
+      qq := QClass(f.table, sb, f.alloc[0, sb]);
+      if qq.levels > 0 then a.otherMid := (qq.levels - 1) div 2 else a.otherMid := (1 shl (qq.bits - 1)) - 1;
+    end;
+  end
+  else a.other := nil;
+  a.scf := @f.scf[ch, sb, 0];
+  a.n := n; a.layer := f.layer; a.levels := q.levels; a.bits := q.bits;
+  a.mid := mid; a.top := top; a.ci := ci; a.sb := sb;
+  a.vt := @m.vt.c[0]; a.vtMask := Cardinal(m.vt.mask);
+  a.w := @m.lmix.w[0]; a.inputs := m.lmix.inputs; a.rate := m.lmix.rate;
+  a.oddCode := @m.oddCode; a.fieldsOdd := @m.fields[F_ODD, 0, 0, 0];
+  a.decoding := Ord(m.decoding);
+  if m.decoding then
+  begin
+    dc.x1 := m.dec.x1; dc.x2 := m.dec.x2; dc.x := m.dec.x;
+    if Length(m.dec.d) > 0 then dc.d := @m.dec.d[0] else dc.d := nil;
+    dc.len := Length(m.dec.d); dc.p := m.dec.p; dc.live := Pointer(m.dec.live);
+    a.dec := @dc;
+    ok := SamplesC(a);
+    m.dec.x1 := dc.x1; m.dec.x2 := dc.x2; m.dec.x := dc.x; m.dec.p := dc.p;
+  end
+  else
+  begin
+    e.x1 := m.enc.x1; e.x2 := m.enc.x2; e.ctx := @m.enc; e.n := 0;
+    a.enc := @e;
+    ok := SamplesC(a);
+    m.enc.x1 := e.x1; m.enc.x2 := e.x2;
+    if e.n > 0 then PutEncoded(m.enc, @e.buf[0], e.n);
+  end;
+  Result := ok <> 0;
+end;
+
 { every field of a Layer I or II frame; decoding fills f }
 function CodeL12Fields(var m: TModel; var f: TL12Frame; const hd: TMpegHeader): Boolean;
 var
@@ -1391,6 +1451,14 @@ begin
         if q.levels > 0 then begin mid := (q.levels - 1) div 2; top := mid; ci := q.levels div 4; end
         else begin mid := (1 shl (q.bits - 1)) - 1; top := mid + 1; ci := q.bits; end;
       end;
+      {$ifndef PMPA_COSTS}
+      if (m.ver >= 6) and Assigned(SamplesC) then
+      begin
+        if f.layer = 1 then q.levels := 0;
+        if not SamplesRunC(m, f, ch, sb, n, mid, top, ci, q) then Exit;
+        Continue;
+      end;
+      {$endif}
       i := 0;
       while i < n do
       begin

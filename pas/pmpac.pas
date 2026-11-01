@@ -1,6 +1,6 @@
 { PMPA's hot loop in C (pmpal3c.c, compiled to pmpal3c.o before this unit:
   pas/build_c.sh). A program that uses this unit codes stream version 6's
-  Layer III values in C; one that does not codes them in Pascal: the same
+  Layer III values and Layer I and II samples in C; one that does not codes them in Pascal: the same
   streams, which the suite checks (and PMPA_NOC=1 leaves them to Pascal in
   a program that has the C).
 
@@ -38,6 +38,7 @@ type
 procedure pmpac_tables(constref t: TTablesC); cdecl; external;
 function pmpac_values(var s: TValuesC): LongInt; cdecl; external;
 function pmpac_layout(k: LongInt): LongInt; cdecl; external;
+function pmpac_samples(var s: TSamplesC): LongInt; cdecl; external;
 
 { n bytes of the encoder's output, as TArithEncoder.Encode writes them }
 procedure Put(ctx: Pointer; b: PByte; n: SizeInt); cdecl;
@@ -61,7 +62,7 @@ begin
 end;
 
 function LayoutOk: Boolean;
-var a: TValuesC; e: TEncC; d: TDecC;
+var a: TValuesC; e: TEncC; d: TDecC; sm: TSamplesC;
 begin
   Result :=
     (pmpac_layout(0) = SizeOf(TValuesC)) and (pmpac_layout(1) = PtrUInt(@a.dg) - PtrUInt(@a)) and
@@ -69,7 +70,9 @@ begin
     (pmpac_layout(4) = SizeOf(TEncC)) and (pmpac_layout(5) = PtrUInt(@e.buf) - PtrUInt(@e)) and
     (pmpac_layout(6) = SizeOf(TDecC)) and (pmpac_layout(7) = PtrUInt(@d.live) - PtrUInt(@d)) and
     (pmpac_layout(8) = SizeOf(TTablesC)) and (pmpac_layout(9) = SizeOf(TCounter)) and
-    (SizeOf(TCounter) = SizeOf(TAdaptiveBit));
+    (SizeOf(TCounter) = SizeOf(TAdaptiveBit)) and
+    (pmpac_layout(10) = SizeOf(TSamplesC)) and (pmpac_layout(11) = PtrUInt(@sm.vt) - PtrUInt(@sm)) and
+    (pmpac_layout(12) = PtrUInt(@sm.dec) - PtrUInt(@sm));
 end;
 
 var
@@ -88,6 +91,7 @@ initialization
   if LayoutOk and (GetEnvironmentVariable('PMPA_NOC') <> '1') then
   begin
     ValuesC := @pmpac_values;
+    SamplesC := @pmpac_samples;
     inUse := True;
   end;
 end.

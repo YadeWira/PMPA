@@ -334,10 +334,158 @@ int32_t pmpac_values(values_t *s)
     return 1;
 }
 
+/* ---------- Layer I and II's samples (stream version 6) ---------- */
+
+#define L_IN 6
+
+typedef struct {
+    int32_t *smp;                   /* this channel and subband's samples (codes), n of them */
+    const int32_t *last;            /* the last frame's, centred, or NULL */
+    const int32_t *other;           /* channel 0's codes in this subband, or NULL */
+    const int32_t *scf;             /* the 3 scale factors */
+    int32_t n, layer, levels, bits, mid, top, ci, sb, otherMid;
+    counter_t *vt; uint32_t vtMask;
+    int32_t *w; int32_t inputs, rate;           /* lmix */
+    counter_t *oddCode;
+    counter_t *fieldsOdd;           /* [512][2][2] */
+    int32_t decoding;
+    enc_t *enc;
+    dec_t *dec;
+} samples_t;
+
+static int l_bit(samples_t *s, int bit, int32_t p)
+{
+    if (s->decoding) return dec_bit(s->dec, p);
+    enc_bit(s->enc, bit, p);
+    return bit;
+}
+
+static int l_abit(samples_t *s, int bit, counter_t *a, int limit)
+{
+    int r = l_bit(s, bit, a->p);
+    abit_update(a, r, limit);
+    return r;
+}
+
+/* Decide: 6 counters and a bias, mixed with set `sel`, no APM */
+static int l_decide(samples_t *s, int bit, const uint32_t *hs, int sel)
+{
+    counter_t *cp[L_IN];
+    int32_t x[L_IN + 1], *w = s->w + sel * s->inputs;
+    int32_t dot = 0, pr, p, err, i, r;
+    for (i = 0; i < L_IN; i++) {
+        cp[i] = &s->vt[hs[i] & s->vtMask];
+        x[i] = T.stretch[cp[i]->p >> 4];
+    }
+    x[L_IN] = 256;
+    for (i = 0; i <= L_IN; i++) dot += (x[i] * w[i]) >> 16;
+    pr = squash(dot);
+    p = pr * 16;
+    if (p < 1) p = 1; else if (p > 65535) p = 65535;
+    r = l_bit(s, bit, p);
+    err = ((r << 12) - pr) * s->rate;
+    for (i = 0; i <= L_IN; i++) {
+        int32_t wi = w[i] + ((x[i] * err) >> 14);
+        if (wi > W_MAX) wi = W_MAX; else if (wi < -W_MAX) wi = -W_MAX;
+        w[i] = wi;
+    }
+    for (i = 0; i < L_IN; i++) counter_update(cp[i], r, V_LIMIT);
+    return r;
+}
+
+/* CodeField with prev 0, for a code word above its levels */
+static int l_field(samples_t *s, int v, int nbits)
+{
+    int i, b, node = 1, same = 1, ctx, r = 0;
+    for (i = nbits - 1; i >= 0; i--) {
+        ctx = node < 256 ? node : 256 + i;
+        b = l_abit(s, (v >> i) & 1, &s->fieldsOdd[(ctx * 2 + 0) * 2 + same], LIMIT_STRUCT);
+        r = r * 2 + b;
+        if (node < 256) node = node * 2 + b;
+        if (b != 0) same = 0;
+    }
+    return r;
+}
+
+static int slog(int32_t v)
+{
+    int b;
+    if (v == 0) return 8;
+    b = bitlen(iabs(v) - 1) + 1;
+    if (b > 8) b = 8;
+    return v > 0 ? 8 + b : 8 - b;
+}
+
+static int l_d(samples_t *s, const uint32_t *c, int id, int prefix, int b)
+{
+    uint32_t hs[L_IN], key = (uint32_t)(((uint64_t)(id * 256 + prefix + 1) * 0x9E3779B1u) & 0xFFFFFFFFu);
+    int i;
+    for (i = 0; i < 5; i++) hs[i] = c[i] ^ key;
+    hs[5] = ((uint32_t)s->ci * 7919u) ^ key;
+    if (id > 3) id = 3;
+    return l_decide(s, b, hs, 32 + s->ci * 4 + id);
+}
+
+/* CodeSample: zero, sign, bit length, the bits below the top one */
+static int l_sample(samples_t *s, int32_t x, const uint32_t *c)
+{
+    int a = iabs(x), L, maxL, bit, k, sg;
+    if (l_d(s, c, 0, 0, a > 0) == 0) return 0;
+    sg = l_d(s, c, 1, 0, x < 0);
+    maxL = bitlen(s->top);
+    L = 1;
+    while (L < maxL && l_d(s, c, 2, L, bitlen(a) > L) == 1) L++;
+    k = 1;
+    for (bit = L - 2; bit >= 0; bit--) k = k * 2 + l_d(s, c, 3 + L, k & 255, (a >> bit) & 1);
+    return sg ? -k : k;
+}
+
+static int32_t before(samples_t *s, int i, int k)
+{
+    if (i - k >= 0) return s->smp[i - k] < 0 ? 0 : s->smp[i - k] - s->mid;
+    if (s->last) return s->last[s->n + i - k];
+    return 0;
+}
+
+/* one channel and subband's samples; 1 if coded, 0 if a decoded one is
+   out of range (a damaged stream) */
+int32_t pmpac_samples(samples_t *s)
+{
+    int i = 0, x1, x2, xo, x, odd;
+    uint32_t c[5];
+    int grouped = s->layer == 2 && s->levels > 0;
+    while (i < s->n) {
+        if (grouped && i % 3 == 0) {
+            odd = l_abit(s, s->smp[i + 1] < 0, s->oddCode, LIMIT_STRUCT);
+            if (odd) {
+                s->smp[i] = l_field(s, s->smp[i], s->bits);
+                if (s->smp[i] < s->levels * s->levels * s->levels) return 0;
+                s->smp[i + 1] = -1; s->smp[i + 2] = -1;
+                i += 3;
+                continue;
+            }
+        }
+        x1 = before(s, i, 1); x2 = before(s, i, 2);
+        xo = (s->other && s->other[i] >= 0) ? slog(s->other[i] - s->otherMid) : 99;
+        c[0] = hash4(s->ci, slog(x1), slog(x2), 1);
+        c[1] = hash4(s->ci, slog(2 * x1 - x2), s->sb >> 2, 2);
+        c[2] = hash4(s->ci, s->sb, min7(iabs(x1)), min7(iabs(x2)));
+        c[3] = hash4(s->ci, xo, slog(x1), 4);
+        c[4] = hash4(s->ci, s->scf[i * 3 / s->n] >> 2, min7(iabs(x1)), 5);
+        x = s->decoding ? 0 : s->smp[i] - s->mid;
+        x = l_sample(s, x, c);
+        if (x + s->mid < 0 || x + s->mid > 2 * s->mid + 1 || (grouped && x + s->mid >= s->levels)) return 0;
+        s->smp[i] = x + s->mid;
+        i++;
+    }
+    return 1;
+}
+
 /* the structs' layout, for pmpac.pas to compare with its records before it
    uses any of this: 0 sizeof(values_t), 1 its dg, 2 its vt, 3 its dec,
    4 sizeof(enc_t), 5 enc_t's buf, 6 sizeof(dec_t), 7 dec_t's live,
-   8 sizeof(tables_t), 9 sizeof(counter_t) */
+   8 sizeof(tables_t), 9 sizeof(counter_t), 10 sizeof(samples_t), 11 its
+   vt, 12 its dec */
 int32_t pmpac_layout(int32_t k)
 {
     switch (k) {
@@ -351,6 +499,9 @@ int32_t pmpac_layout(int32_t k)
         case 7: return (int32_t)offsetof(dec_t, live);
         case 8: return (int32_t)sizeof(tables_t);
         case 9: return (int32_t)sizeof(counter_t);
+        case 10: return (int32_t)sizeof(samples_t);
+        case 11: return (int32_t)offsetof(samples_t, vt);
+        case 12: return (int32_t)offsetof(samples_t, dec);
     }
     return -1;
 }
