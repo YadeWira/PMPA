@@ -25,11 +25,12 @@ compressor. The command is described in [doc/CLI.md](doc/CLI.md), the file
 in [doc/FORMAT.md](doc/FORMAT.md), the codec in [doc/CODEC.md](doc/CODEC.md).
 
 **Status: in development.** The container and the command work end to end,
-and every layer is modelled: Layer III files come out at 84.04% of their
-size, where packMP3 3.0f makes 84.36%, and Layer II at 72.08%, where
+and every layer is modelled: Layer III files come out at 84.07% of their
+size, where packMP3 3.0f makes 84.36%, and Layer II at 72.13%, where
 packMP2 0.8 makes 76.95% at best (measured 01/11/2026,
-[doc/CODEC.md](doc/CODEC.md)). It is slow for now: about 1 MB/s to
-compress, on one thread a file. Built bottom-up, each layer with its tests:
+[doc/CODEC.md](doc/CODEC.md)). It is slow for now: about 0.65 MB/s to
+compress a file on 2 threads and to extract it on one, where packMP3
+does about 3 MB/s. Built bottom-up, each layer with its tests:
 
 | Layer | Unit | Status |
 |---|---|---|
@@ -42,7 +43,8 @@ compress, on one thread a file. Built bottom-up, each layer with its tests:
 | version 3: Layer III's Huffman-coded values decoded and modelled, coded again exactly | `pas/pmpahuff.pas` | done, a first model |
 | version 4: Layer III mixed (values, signs, scalefactors), part2_3_length derived | `pas/pmpamodel.pas` | done |
 | version 5: Layer I and II (allocation, scale factors, samples) | `pas/pmpal12.pas` | done |
-| speed | | next |
+| version 6: faster (contexts hashed once a value, verifying on a second thread) | | done |
+| the model's hot loop in C | | next |
 
 ## Building and testing
 

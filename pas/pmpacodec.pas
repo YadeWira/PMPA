@@ -51,7 +51,7 @@ interface
 uses SysUtils, pmpampeg, pmpal3, pmpahuff, pmpal12;
 
 const
-  STREAM_VERSION = 5;
+  STREAM_VERSION = 6;
   PMPA_VERSION = '0.1.0';
 
 type
@@ -83,6 +83,8 @@ const
 var
   { what encoding cost, in bits, by part (the tools' build only) }
   Costs: array[0..32] of Double;
+  { the tools' build: Layer III value contexts to leave out, a bit each }
+  DropInput: Integer = 0;
 {$endif}
 
 implementation
@@ -121,6 +123,7 @@ const
 type
   TModel = record
     decoding: Boolean;
+    ver: Integer;           { the stream's version }
     enc: TArithEncoder;
     dec: TArithDecoder;
     kinds: array[0..KIND_START, 1..7] of TAdaptiveBit;
@@ -680,14 +683,33 @@ function CodeValues4(var m: TModel; var v: TGranuleValues; const gi: TGranuleInf
   const hd: TMpegHeader; quads, c, nCh: Integer): Boolean;
 var
   r1, r2, i, t, cap, cls, lin, a, k, e, n, node, bit, n1, n2, pn, p0, oc, dg, pos, nbb: Integer;
-  hs: array[0..9] of Cardinal; pv, ov: ^TGranuleValues; dist, est, maxL, L: Integer;
+  hs: array[0..9] of Cardinal; base, hs6: array[0..7] of Cardinal; pv, ov: ^TGranuleValues;
+  dist, est, maxL, L: Integer;
   place, win: TValuePlaces; mult, sf, step, ds, sa, so, sb: Integer; steps: array[0..575] of Integer;
 
   { one decision: `id` (0 zero, 1-3 the bit length, 4-9 the bits below
     the top one), `prefix` the bits decided so far }
   function D(id, prefix, bitv: Integer): Integer;
-  var key: Integer;
+  var key, slot, j{$ifdef PMPA_COSTS}, k2{$endif}: Integer;
   begin
+    if m.ver >= 6 then
+    begin
+      { version 6: each context's decisions of one value share a line of
+        16 counters (the 15 there can be), from hashes made once a value }
+      case id of
+        0..5: slot := id;
+        6: slot := 6 + prefix - 2;
+        7: slot := 8;
+        8: slot := 9 + prefix - 2;
+      else slot := 11 + prefix - 4;
+      end;
+      for j := 0 to 7 do hs6[j] := (base[j] and $FFFFFFF0) or Cardinal(slot);
+      {$ifdef PMPA_COSTS}
+      for k2 := 0 to 7 do if (DropInput shr k2) and 1 = 1 then hs6[k2] := Cardinal(slot);
+      {$endif}
+      if id = 0 then Part(6) else Part(7);
+      Exit(DecideApm(m, bitv, hs6, id * 8 + cls, (id * 8 + cls) * EST_BUCKETS + est));
+    end;
     key := id * 8 + prefix;
     hs[0] := Hash4(1, key * 8 + cls, n1, n2);
     hs[1] := Hash4(2, key * 8 + cls, pn, nbb);
@@ -770,6 +792,21 @@ begin
     if oc < 16 then Inc(est, 2 * oc);
     est := EstBucket(est);
     a := Abs(v[i]);
+    if m.ver >= 6 then
+    begin
+      { version 3 to 5's contexts but the coarse position with the
+        neighbours and the magnitude estimate (the estimate still picks
+        the APM's context): without those two the files were a little
+        smaller; without four, 0.13 points bigger (measured 01/11/2026) }
+      base[0] := Hash4(1, cls, n1, n2);
+      base[1] := Hash4(2, cls, pn, nbb);
+      base[2] := Hash3(3, cls, pos);
+      base[3] := Hash4(4, cls, oc, Min3(n1));
+      base[4] := Hash4(5, cls, dg * 16 + Min7(p0), Min3(n1));
+      base[5] := Hash4(7, cls, ds, Min3(p0) * 4 + Min3(n1));
+      base[6] := Hash4(8, cls, sa, pos shr 3);
+      base[7] := Hash4(9, cls, dist, Min3(n1) * 4 + Min3(p0));
+    end;
     { zero or not; the bit length (1 to 4: up to 15) as "longer than L";
       the bits below the top one, each knowing those above it }
     if D(0, 0, Ord(a > 0)) = 0 then k := 0
@@ -1076,7 +1113,18 @@ function CodeSample(var m: TModel; x, top, cls: Integer; c0, c1, c2, c3, c4: Car
 var a, L, maxL, bit, k, sg: Integer; hs: array[0..5] of Cardinal;
 
   function D(id, prefix, b: Integer): Integer;
+  var key: Cardinal;
   begin
+    if m.ver >= 6 then
+    begin
+      { version 6: the contexts' hashes made once a sample, the decision
+        mixed in by one multiplication (in 64 bits: no overflow) }
+      key := Cardinal((QWord(id * 256 + prefix + 1) * $9E3779B1) and $FFFFFFFF);
+      hs[0] := c0 xor key; hs[1] := c1 xor key; hs[2] := c2 xor key;
+      hs[3] := c3 xor key; hs[4] := c4 xor key; hs[5] := Cardinal(cls) * 7919 xor key;
+      if id > 3 then id := 3;
+      Exit(Decide(m, m.lmix, b, hs, 32 + cls * 4 + id));
+    end;
     hs[0] := Hash4(c0, id, prefix, 11);
     hs[1] := Hash4(c1, id, prefix, 12);
     hs[2] := Hash4(c2, id, prefix, 13);
@@ -1436,6 +1484,7 @@ var
   run: TRun; inRun: Boolean;
 begin
   Result := False;
+  m.ver := ver;
   pos := 0; i := 0; inRun := False;
   run := Default(TRun);
   while pos < total do
@@ -1505,16 +1554,25 @@ begin
   Result := not inRun;
 end;
 
-function Encode(const d: TBytes; const scan: TMpegScan; ver: Integer): TBytes;
+{ the stream of d; with live, its bytes also go to live as they come out
+  (and live is finished, even on an exception) }
+function Encode(const d: TBytes; const scan: TMpegScan; ver: Integer; live: TLiveStream = nil): TBytes;
 var m: PModel; work, body: TBytes; n: SizeInt;
 begin
   New(m);
   try
-    m^.Init(False);
-    m^.enc.Init;
-    work := Copy(d, 0, Length(d));
-    Walk(m^, work, Length(d), scan, ver);
-    body := m^.enc.Finish;
+    try
+      m^.Init(False);
+      if live <> nil then m^.enc.InitLive(live) else m^.enc.Init;
+      work := Copy(d, 0, Length(d));
+      Walk(m^, work, Length(d), scan, ver);
+      body := m^.enc.Finish;
+      if live <> nil then body := live.Bytes;
+    except
+      { the verifier waits for bytes: let it end }
+      if live <> nil then live.Finish;
+      raise;
+    end;
   finally
     Dispose(m);
   end;
@@ -1551,12 +1609,71 @@ begin
   Result := dsOk;
 end;
 
+{ ---------- verifying while encoding ---------- }
+
+type
+  { Decodes the stream from the encoder's bytes as they come out (a
+    TLiveStream), on its own thread: the check runs beside the encoding.
+    A bare thread (BeginThread, WaitForThreadTerminate), as PRA's: there
+    TThread.WaitFor waited in steps of 100 ms. }
+  TVerifier = record
+    live: TLiveStream;
+    total: Int64;
+    back: TBytes;
+    ok: Boolean;
+  end;
+  PVerifier = ^TVerifier;
+
+function VerifierRun(p: Pointer): PtrInt;
+var v: PVerifier; m: PModel; none: TMpegScan;
+begin
+  v := p;
+  v^.ok := False;
+  none.Clear;
+  New(m);
+  try
+    try
+      m^.Init(True);
+      m^.dec.InitLive(v^.live);
+      SetLength(v^.back, v^.total);
+      v^.ok := Walk(m^, v^.back, v^.total, none, STREAM_VERSION);
+    except
+      v^.ok := False;
+    end;
+  finally
+    Dispose(m);
+  end;
+  Result := 0;
+end;
+
 function EncodeFile(const d: TBytes; out s: TBytes; threads: Integer): TEncodeStatus;
-var scan: TMpegScan; back: TBytes;
+var scan: TMpegScan; back: TBytes; v: TVerifier; tid: TThreadID; same: Boolean;
 begin
   s := nil;
   ScanMpeg(d, scan);
   if scan.frames = 0 then Exit(esNotMpeg);
+  if threads >= 2 then
+  begin
+    { the check on a second thread, as the stream comes out }
+    v.live := TLiveStream.Create;
+    v.total := Length(d); v.back := nil; v.ok := False;
+    tid := BeginThread(@VerifierRun, @v);
+    try
+      try
+        s := Encode(d, scan, STREAM_VERSION, v.live);
+      except
+        s := nil;
+      end;
+    finally
+      WaitForThreadTerminate(tid, 0);
+      CloseThread(tid);
+      v.live.Free;
+    end;
+    same := (s <> nil) and v.ok and (Length(v.back) = Length(d))
+            and CompareMem(@v.back[0], @d[0], Length(d));
+    if not same then begin s := nil; Exit(esNotBack); end;
+    Exit(esOk);
+  end;
   s := Encode(d, scan, STREAM_VERSION);
   { the one guarantee: it has to come back }
   if (DecodeFile(s, Length(d), back) <> dsOk) or (Length(back) <> Length(d))

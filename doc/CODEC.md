@@ -258,3 +258,42 @@ cannot take counts at its own size: one):
 `test_l12` reads and writes back every Layer I and II frame of those
 streams and the corpus (99,598 of 99,599: the one left is cut short in a
 transport stream), and every CRC matches.
+
+## The stream, version 6: the same models, faster
+
+Version 6 codes what version 5 does, faster:
+
+- Layer III's values: each context's hash is made once a value, not once
+  a decision, and the decisions of one value (15 there can be: zero, bit
+  length, the bits below the top one) share a line of 16 counters, the
+  line the context's hash picks. Two of version 5's ten contexts are left
+  out (the coarse position with the neighbours, and the magnitude
+  estimate, which still picks the APM's context): without them the files
+  were a little smaller. Without four, 0.13 points bigger on the corpus's
+  Layer III; that was not worth the 15% it saved.
+- Layer I and II's samples: the contexts' hashes once a sample, each
+  decision mixed in by one multiplication.
+- Compressing a file with 2 threads or more verifies on a second thread,
+  decoding the stream as it comes out (`TLiveStream`), instead of after.
+  The stream is the same either way (`test_codec` checks it).
+
+Measured on 01/11/2026, one file (the corpus's 6.5 MB Layer III file), on a
+machine with other work running:
+
+| | version 5 | version 6 |
+|---|---|---|
+| compress, 1 thread | 25.5 s | 18.1 s |
+| compress, 2 threads | (the same as 1) | 10.3 s |
+| extract | 12.2 s | 9.8 s |
+
+And with `scripts/measure.sh`, 8 threads, one file a thread:
+
+| set | files | version 5 | version 6 |
+|---|---|---|---|
+| the corpus's MPEG files | 24 | 82.75%; 34.3 s / 14.3 s | 82.78%; 31.3 s / 10.5 s |
+| of them, Layer III | 11 | 84.04% | 84.07% |
+| Layer II from samples.ffmpeg.org | 53 | 72.08% | 72.13% |
+
+Most of the time is still the mixing (counters, mixer, APM) and the
+contexts made for each value, in Pascal: packMP3 does the 6.5 MB file in
+2 s. The family's way is the model's hot loop in C, as PJA's.

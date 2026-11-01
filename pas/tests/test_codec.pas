@@ -7,7 +7,7 @@
     test_codec <dir>... }
 program test_codec;
 {$I ../pmpa.inc}
-uses SysUtils, Classes, pmpablake3, pmpampeg, pmpal3, pmpal12, pmpacodec;
+uses {$ifdef UNIX} cthreads, {$endif} SysUtils, Classes, pmpablake3, pmpampeg, pmpal3, pmpal12, pmpacodec;
 
 var cells, failures: Integer;
 
@@ -80,6 +80,17 @@ begin
     end;
   end;
   Check(nOk >= 41, 'streams that came back: ' + IntToStr(nOk));
+
+  Writeln('verified on a second thread as it is written');
+  survived := True; n := 0;
+  for i := 0 to files.Count - 1 do
+  begin
+    d := LoadFile(files[i]);
+    if EncodeFile(d, s) <> esOk then Continue;
+    if (EncodeFile(d, back, 2) <> esOk) or not Same(s, back) then survived := False;
+    Inc(n);
+  end;
+  Check(survived and (n >= 41), Format('the same stream as verified after: %d files', [n]));
 
   Writeln('what an encoder can get wrong comes back too');
   { a CRC that is not the one the frame gives: the 6th frame's of a

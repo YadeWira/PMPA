@@ -10,6 +10,7 @@ var
   i, k: Integer; f: TFileStream; d, s: TBytes; total, inBytes: Double;
 begin
   inBytes := 0;
+  DropInput := StrToIntDef(GetEnvironmentVariable('PMPA_DROP'), 0);
   for i := 1 to ParamCount do
   begin
     f := TFileStream.Create(ParamStr(i), fmOpenRead or fmShareDenyNone);
