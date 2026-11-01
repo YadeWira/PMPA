@@ -442,3 +442,9 @@ way a tag can keep one, made by `scripts/mksamples.py`.
 Only their first MB was taken, where a cover weighs more than in a whole
 file: in a 5 to 10 MB MP3, a 200 KB cover is 2 to 4% of it, and PJA takes
 about a quarter off it.
+
+Against packMP3 3.0f, which recompresses JPEG covers too (with packJPG),
+on the 55 of those files whose cover is a JPEG (`packMP3 a -p`, covers on;
+it fails on 4 of them, cut at 1 MB, which count at their own size):
+packMP3 82.49%, PMPA 0.1.0 84.51%, PMPA 0.2.0 (version 8) 79.60%; on the 51
+packMP3 takes, 81.37%, 84.48% and 79.38%.

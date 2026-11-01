@@ -45,13 +45,16 @@ in [doc/FORMAT.md](doc/FORMAT.md), the codec in [doc/CODEC.md](doc/CODEC.md).
 Measured on 01/11/2026 ([how][wBench]), every file compressed, extracted
 and compared with its original:
 
-| set | files | size | packMP3 3.0f | packMP2 0.8 (best) | PMPA 0.1.0 |
+| set | files | size | packMP3 3.0f | packMP2 0.8 (best) | PMPA 0.2.0 |
 |---|---|---|---|---|---|
 | Layer III (MP3), a public sample corpus | 11 | 24.2 MB | 84.36% (stores one as it is) | | **84.12%** |
+| MP3 with a JPEG cover, from archive.org (the first MB of each) | 55 | 56.9 MB | 82.49% (takes 51) | | **79.60%** |
 | Layer II (MP2), from samples.ffmpeg.org | 53 | 42.9 MB | | 76.95% (takes 52) | **72.17%** |
 | Layer I (MP1), from samples.ffmpeg.org | 3 | 1.1 MB | | | **51.58%** |
 
-PMPA is slower: a 6.5 MB MP3 compresses in 3.6 s and extracts in 1.6 s on
+The JPEG covers inside ID3v2 tags go through [PJA](https://github.com/YadeWira/PJA)
+(vendored), as packMP3's go through packJPG; on the 51 files packMP3 takes,
+it makes 81.37% and PMPA 79.38%. PMPA is slower: a 6.5 MB MP3 compresses in 3.6 s and extracts in 1.6 s on
 4 threads (in bands of 2 MiB), 12.1 s and 5.2 s on one, where packMP3
 compresses it in 2 s.
 

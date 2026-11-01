@@ -52,7 +52,7 @@ uses SysUtils, pmpampeg, pmpal3, pmpahuff, pmpal12;
 
 const
   STREAM_VERSION = 8;
-  PMPA_VERSION = '0.1.0';
+  PMPA_VERSION = '0.2.0';
 
 type
   TEncodeStatus = (
