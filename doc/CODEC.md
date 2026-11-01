@@ -69,3 +69,39 @@ headers say, not what is inside them. Measured on 01/11/2026:
 
 Every file came back byte for byte. The 18 corpus files with no MPEG audio
 frame were refused.
+
+## The stream, version 2: Layer III's structure (`pas/pmpal3.pas`)
+
+Version 2 codes a Layer III frame by what it is. The decoder reads version
+1 streams too (`test_codec` makes them and decodes them).
+
+- The **side information**, field by field, each in the context of the
+  bits of the field so far, of the same field in the granule before (the
+  same channel's, in this frame or the last), and of whether the bits so
+  far all matched it.
+- The **CRC**, when there is one, as one decision: it is the one the header
+  and side information give. When it is not, its 16 bits follow.
+- The **slots**, as part of the run's slot stream (the slots of a run of
+  frames laid end to end, in which the bit reservoir places each frame's
+  main data): the filler up to where the frame's main data starts, then
+  its main data. A decision after each frame says whether the run goes on;
+  when it does not, the rest of the slot stream is filler.
+- A frame whose main data does not fit (it starts before the run, or
+  overlaps the frame before) leaves its slots to the filler.
+
+The slot stream's bits are still coded as bytes are in version 1: in the
+context of the bits of their byte so far (order 0), main data and filler
+apart. With 12 bits of history instead, the samples came out at 96.57%
+(4,096 contexts to learn on data close to noise).
+
+Every Layer III frame of the samples and the corpus (55,388 frames) gives
+its side information back bit for bit, all 65 CRCs match, and the main data
+of every frame is where the reservoir says, but one: the frame after the
+junk in `tests/odd/junk_between.mp3`, whose reservoir points into the junk.
+
+Measured on 01/11/2026:
+
+| set | files | size | version 1 | version 2 |
+|---|---|---|---|---|
+| synthetic samples (codec streams only) | 41 | 723,039 B | 95.11% | 93.73% |
+| the local corpus's files with MPEG audio | 24 | 24.8 MB | 96.74% | 94.42% |

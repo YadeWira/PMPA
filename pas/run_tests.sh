@@ -16,7 +16,7 @@ echo "== source guards"
 python3 pas/collisions.py pas
 
 echo "== build"
-for prog in test_blake3 test_arith test_mpeg test_codec test_format test_pmpafs; do
+for prog in test_blake3 test_arith test_mpeg test_l3 test_codec test_format test_pmpafs; do
   $FPC -O2 -Fupas -Fipas -FU"$OUT" -FE"$OUT" "pas/tests/$prog.pas" > "$OUT/fpc.log" 2>&1 \
     || { cat "$OUT/fpc.log"; exit 1; }
 done
@@ -25,6 +25,7 @@ echo "== tests"
 "$OUT/test_blake3" pas/tests/kat.txt | tail -1
 "$OUT/test_arith" | tail -1
 "$OUT/test_mpeg" tests | tail -1
+"$OUT/test_l3" -q tests/mp3 tests/odd | tail -1
 "$OUT/test_codec" $SAMPLES tests/odd > "$OUT/codec.txt" || { cat "$OUT/codec.txt"; exit 1; }
 tail -3 "$OUT/codec.txt" | head -1
 "$OUT/test_format" $SAMPLES | tail -1

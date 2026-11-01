@@ -17,13 +17,14 @@ if command -v sha256sum > /dev/null; then SHA="sha256sum"; else SHA="shasum -a 2
 rm -rf "$OUT"; mkdir -p "$OUT/u" "$OUT/t" "$OUT/p" "$OUT/x"
 
 echo "== layer tests"
-for prog in test_blake3 test_arith test_mpeg test_codec test_format; do
+for prog in test_blake3 test_arith test_mpeg test_l3 test_codec test_format; do
   $FPC -O2 -Fupas -Fipas -FU"$OUT/t" -FE"$OUT/t" "pas/tests/$prog.pas" > "$OUT/fpc.log" 2>&1 \
     || { cat "$OUT/fpc.log"; exit 1; }
 done
 "$OUT/t/test_blake3$EXE" pas/tests/kat.txt | tail -1
 "$OUT/t/test_arith$EXE" | tail -1
 "$OUT/t/test_mpeg$EXE" tests | tail -1
+"$OUT/t/test_l3$EXE" -q tests/mp3 tests/odd | tail -1
 "$OUT/t/test_codec$EXE" $SAMPLES tests/odd | tail -3
 "$OUT/t/test_format$EXE" $SAMPLES | tail -1
 

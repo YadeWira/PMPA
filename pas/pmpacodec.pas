@@ -1,8 +1,8 @@
 { Layer 4: the codec stream. A whole file in, a stream out, and back.
 
-  Stream, version 1 (doc/CODEC.md):
+  Stream (doc/CODEC.md):
 
-      version     1 B      1
+      version     1 B      1 or 2 (both are read)
       length      varint   the original's length
       segments    arithmetic-coded, to the end
 
@@ -17,12 +17,22 @@
       the rest    the length (its bit length, 6 decisions, then the bits
                   below the top one), then the bytes
 
-  Bytes are coded bit by bit, in the context of the bits of the byte so
-  far: alone inside frames (order 0), with the byte before in the rest
-  (order 1). Order 1 inside frames cost 8% on the samples (65,536 contexts
-  to learn on data near noise: 01/11/2026). This is the scaffold the layer
-  models replace: version 1 knows the frames' structure, not what is inside
-  them.
+  Version 2 codes a Layer III frame's other bytes by what they are
+  (pmpal3): its side information field by field, each in the context of the
+  same field of the granule before; its CRC as one decision, "the one the
+  header and side information give", when it is; and its slots as part of
+  the run's slot stream: the bits no frame's main data claims (filler) up
+  to where this frame's main data starts, then its main data, bit by bit.
+  After each Layer III frame a decision says whether the next segment is
+  a frame of the same run; when it is not, the filler left at the end of
+  the slot stream follows. A frame whose main data does not fit (it starts
+  before the run, or overlaps the frame before) has its slots left to the
+  filler: the decoder sees the same side information and decides the same.
+
+  Other bytes are coded bit by bit in the context of the bits of the byte
+  so far: alone inside frames (order 0), with the byte before elsewhere
+  (order 1). Slot stream bits are coded in the context of the 12 bits
+  before them, filler and main data apart.
 
   EncodeFile verifies: it decodes its own stream and compares it with the
   input. }
@@ -38,10 +48,10 @@ unit pmpacodec;
 
 interface
 
-uses SysUtils, pmpampeg;
+uses SysUtils, pmpampeg, pmpal3;
 
 const
-  STREAM_VERSION = 1;
+  STREAM_VERSION = 2;
   PMPA_VERSION = '0.1.0';
 
 type
@@ -57,6 +67,9 @@ function EncodeFile(const d: TBytes; out s: TBytes; threads: Integer = 1): TEnco
 { The file of s, at most maxOut bytes. }
 function DecodeFile(const s: TBytes; maxOut: Int64; out d: TBytes; threads: Integer = 1): TDecodeStatus;
 function EncodeStatusName(st: TEncodeStatus): string;
+{ for the tests: the stream of d in an earlier version (1 to STREAM_VERSION),
+  not verified; nil if d has no MPEG audio frame }
+function EncodeAs(const d: TBytes; ver: Integer): TBytes;
 function DecodeStatusName(st: TDecodeStatus): string;
 
 implementation
@@ -67,6 +80,14 @@ const
   LIMIT_STRUCT = 127;   { the structure (kinds, headers, lengths) is steady }
   LIMIT_BYTES = 60;
   KIND_START = 6;       { the context of the first segment's kind }
+
+const
+  { the side information's fields, each with its own contexts }
+  F_MDB = 0; F_PRIV = 1; F_SCFSI = 2; F_PART23 = 3; F_BIGV = 4; F_GAIN = 5;
+  F_SFC = 6; F_WS = 7; F_BT = 8; F_MIX = 9; F_TAB = 10; { 10, 11, 12 }
+  F_SUBG = 13; F_R0 = 14; F_R1 = 15; F_PRE = 16; F_SFS = 17; F_C1 = 18; F_CRC = 19;
+  N_FIELDS = 20;
+  HIST_BITS = 12;
 
 type
   TModel = record
@@ -80,6 +101,12 @@ type
     lenBits: array[1..63] of TAdaptiveBit;       { a tree of 6 decisions }
     lenLow: array[0..62] of TAdaptiveBit;
     bytes: array[0..1, 0..255, 1..255] of TAdaptiveBit;   { [0, 0] for frames }
+    { Layer III }
+    fields: array[0..N_FIELDS - 1, 0..511, 0..1, 0..1] of TAdaptiveBit;
+    crcOk, runGoesOn: TAdaptiveBit;
+    slot: array[0..1, 0..(1 shl HIST_BITS) - 1] of TAdaptiveBit;   { [0] main data, [1] filler }
+    hist: Integer;
+    lastSi: TSideInfo;
     lastHeader: UInt32;
     lastFree: Integer;
     prevKind: Integer;
@@ -89,8 +116,19 @@ type
   end;
   PModel = ^TModel;
 
+  { a run of Layer III frames of one stream, and its slot stream }
+  TRun = record
+    first: TMpegHeader;
+    offs, cums: array of Int64;   { each frame's slots: where in the file, where in the slot stream }
+    n, cursor: Integer;
+    slotBytes: Int64;             { the slot stream's length so far }
+    prevEnd: Int64;               { in bits: where the last mapped main data ended }
+    procedure Start(const hd: TMpegHeader);
+    procedure AddSlots(fileOffset, len: Int64);
+  end;
+
 procedure TModel.Init(isDecoding: Boolean);
-var i, j, k: Integer;
+var i, j, k, l: Integer;
 begin
   decoding := isDecoding;
   for i := 0 to KIND_START do for j := 1 to 7 do kinds[i, j].Init;
@@ -100,6 +138,12 @@ begin
   for i := 1 to 63 do lenBits[i].Init;
   for i := 0 to 62 do lenLow[i].Init;
   for i := 0 to 1 do for j := 0 to 255 do for k := 1 to 255 do bytes[i, j, k].Init;
+  for i := 0 to N_FIELDS - 1 do for j := 0 to 511 do for k := 0 to 1 do for l := 0 to 1 do
+    fields[i, j, k, l].Init;
+  crcOk.Init; runGoesOn.Init;
+  for i := 0 to 1 do for j := 0 to (1 shl HIST_BITS) - 1 do slot[i, j].Init;
+  hist := 0;
+  lastSi := Default(TSideInfo);
   lastHeader := 0; lastFree := 0; prevKind := KIND_START;
 end;
 
@@ -108,6 +152,22 @@ begin
   if decoding then Result := dec.Decode(ab.p)
   else begin enc.Encode(b, ab.p); Result := b; end;
   ab.Update(Result, limit);
+end;
+
+procedure TRun.Start(const hd: TMpegHeader);
+begin
+  first := hd; n := 0; cursor := 0; slotBytes := 0; prevEnd := 0;
+end;
+
+procedure TRun.AddSlots(fileOffset, len: Int64);
+begin
+  if n = Length(offs) then
+  begin
+    SetLength(offs, 2 * n + 64);
+    SetLength(cums, 2 * n + 64);
+  end;
+  offs[n] := fileOffset; cums[n] := slotBytes;
+  Inc(n); Inc(slotBytes, len);
 end;
 
 { ---------- the parts of a segment, the same code both ways ---------- }
@@ -181,6 +241,142 @@ begin
   end;
 end;
 
+{ ---------- Layer III ---------- }
+
+{ a field of nbits, most significant bit first, each in the context of the
+  bits so far (the top 8), of the same bit of prev and of whether the bits
+  so far all matched prev }
+function CodeField(var m: TModel; v, nbits, fid, prev: Integer): Integer;
+var i, b, node, same, pb, ctx: Integer;
+begin
+  Result := 0; node := 1; same := 1;
+  for i := nbits - 1 downto 0 do
+  begin
+    pb := (prev shr i) and 1;
+    if node < 256 then ctx := node else ctx := 256 + i;
+    b := m.Bit((v shr i) and 1, m.fields[fid, ctx, pb, same], LIMIT_STRUCT);
+    Result := Result * 2 + b;
+    if node < 256 then node := node * 2 + b;
+    if b <> pb then same := 0;
+  end;
+end;
+
+procedure CodeSideInfo(var m: TModel; var si: TSideInfo);
+var g, c, b, i: Integer; p: TGranuleInfo; last: TSideInfo;
+begin
+  last := m.lastSi;
+  if si.lsf then
+  begin
+    si.mainDataBegin := CodeField(m, si.mainDataBegin, 8, F_MDB, last.mainDataBegin);
+    si.privateBits := CodeField(m, si.privateBits, si.nCh, F_PRIV, last.privateBits);
+  end
+  else
+  begin
+    si.mainDataBegin := CodeField(m, si.mainDataBegin, 9, F_MDB, last.mainDataBegin);
+    if si.nCh = 1 then si.privateBits := CodeField(m, si.privateBits, 5, F_PRIV, last.privateBits)
+    else si.privateBits := CodeField(m, si.privateBits, 3, F_PRIV, last.privateBits);
+    for c := 0 to si.nCh - 1 do
+      for b := 0 to 3 do
+        si.scfsi[c, b] := CodeField(m, si.scfsi[c, b], 1, F_SCFSI, last.scfsi[c, b]);
+  end;
+  for g := 0 to si.nGr - 1 do
+    for c := 0 to si.nCh - 1 do
+    begin
+      { the same channel's granule before, in this frame or the last one }
+      if g > 0 then p := si.gr[g - 1, c]
+      else if (last.nGr > 0) and (c < last.nCh) then p := last.gr[last.nGr - 1, c]
+      else p := Default(TGranuleInfo);
+      with si.gr[g, c] do
+      begin
+        part23 := CodeField(m, part23, 12, F_PART23, p.part23);
+        bigValues := CodeField(m, bigValues, 9, F_BIGV, p.bigValues);
+        globalGain := CodeField(m, globalGain, 8, F_GAIN, p.globalGain);
+        if si.lsf then sfCompress := CodeField(m, sfCompress, 9, F_SFC, p.sfCompress)
+        else sfCompress := CodeField(m, sfCompress, 4, F_SFC, p.sfCompress);
+        winSwitch := CodeField(m, winSwitch, 1, F_WS, p.winSwitch);
+        if winSwitch = 1 then
+        begin
+          blockType := CodeField(m, blockType, 2, F_BT, p.blockType);
+          mixed := CodeField(m, mixed, 1, F_MIX, p.mixed);
+          for i := 0 to 1 do table[i] := CodeField(m, table[i], 5, F_TAB + i, p.table[i]);
+          for i := 0 to 2 do subGain[i] := CodeField(m, subGain[i], 3, F_SUBG, p.subGain[i]);
+        end
+        else
+        begin
+          for i := 0 to 2 do table[i] := CodeField(m, table[i], 5, F_TAB + i, p.table[i]);
+          region0 := CodeField(m, region0, 4, F_R0, p.region0);
+          region1 := CodeField(m, region1, 3, F_R1, p.region1);
+        end;
+        if not si.lsf then preflag := CodeField(m, preflag, 1, F_PRE, p.preflag);
+        sfScale := CodeField(m, sfScale, 1, F_SFS, p.sfScale);
+        count1Table := CodeField(m, count1Table, 1, F_C1, p.count1Table);
+      end;
+    end;
+  m.lastSi := si;
+end;
+
+{ the bits [a, b) of the run's slot stream, in the file's bytes }
+procedure CodeSlotBits(var m: TModel; var d: TBytes; var run: TRun; a, b: Int64; cls: Integer);
+var bit, idx, at: Int64; k, sh, v: Integer;
+begin
+  bit := a;
+  while bit < b do
+  begin
+    idx := bit shr 3;
+    k := run.cursor;
+    while (k + 1 < run.n) and (run.cums[k + 1] <= idx) do Inc(k);
+    run.cursor := k;
+    at := run.offs[k] + idx - run.cums[k];
+    sh := 7 - Integer(bit and 7);
+    v := (d[at] shr sh) and 1;
+    { the bits of this slot-stream byte so far, as an order-0 byte model }
+    if sh = 7 then m.hist := 1;
+    v := m.Bit(v, m.slot[cls, m.hist], LIMIT_BYTES);
+    if m.decoding and (v = 1) then d[at] := d[at] or (1 shl sh);
+    m.hist := m.hist * 2 + v;
+    Inc(bit);
+  end;
+end;
+
+{ a Layer III frame's bytes after its header, the frame at pos of len bytes;
+  False if the stream is damaged }
+function CodeL3Frame(var m: TModel; var d: TBytes; var run: TRun; pos, len: Int64;
+  const hd: TMpegHeader): Boolean;
+var
+  si: TSideInfo; siAt: Int64; w: TBytes; crc, stored, ok, i: Integer; start, stop, cum: Int64;
+begin
+  Result := False;
+  if len < SlotsOffset(hd) then Exit;
+  siAt := pos + 4 + 2 * Ord(hd.hasCrc);
+  if m.decoding then InitSideInfo(hd, si) else ReadSideInfo(d, siAt, hd, si);
+  CodeSideInfo(m, si);
+  if m.decoding then
+  begin
+    w := WriteSideInfo(si, hd);
+    for i := 0 to hd.sideInfoBytes - 1 do d[siAt + i] := w[i];
+  end;
+  if hd.hasCrc then
+  begin
+    crc := MpegCrc(HeaderAt(d, pos), d, siAt, hd.sideInfoBytes * 8);
+    stored := (d[pos + 4] shl 8) or d[pos + 5];
+    ok := m.Bit(Ord(stored = crc), m.crcOk, LIMIT_STRUCT);
+    if ok = 1 then stored := crc
+    else stored := CodeField(m, stored, 16, F_CRC, crc);
+    d[pos + 4] := stored shr 8; d[pos + 5] := stored and $FF;
+  end;
+  cum := run.slotBytes;
+  run.AddSlots(pos + SlotsOffset(hd), len - SlotsOffset(hd));
+  start := (cum - si.mainDataBegin) * 8;
+  stop := start + MainDataBits(si);
+  if (start >= run.prevEnd) and (stop <= run.slotBytes * 8) then
+  begin
+    CodeSlotBits(m, d, run, run.prevEnd, start, 1);
+    CodeSlotBits(m, d, run, start, stop, 0);
+    run.prevEnd := stop;
+  end;
+  Result := True;
+end;
+
 { ---------- the stream ---------- }
 
 procedure PutVarint(var s: TBytes; var n: SizeInt; v: Int64);
@@ -207,53 +403,95 @@ begin
   if Result > maxv then Result := -1;
 end;
 
-function Encode(const d: TBytes; const scan: TMpegScan): TBytes;
+{ Every segment, the same code both ways: the encoder takes them from
+  scan, the decoder from the stream. ver: the stream's version. False if the
+  stream is damaged. }
+function Walk(var m: TModel; var d: TBytes; total: Int64; const scan: TMpegScan; ver: Integer): Boolean;
 var
-  m: PModel; work, body: TBytes; i: Integer; seg: TSegment; hd: TMpegHeader;
-  n: SizeInt; freeLen: Integer;
+  pos, len: Int64; i, kind, freeLen, goesOn: Integer; h: UInt32; hd, hn: TMpegHeader;
+  run: TRun; inRun: Boolean;
+begin
+  Result := False;
+  pos := 0; i := 0; inRun := False;
+  run := Default(TRun);
+  while pos < total do
+  begin
+    kind := 0;
+    if not m.decoding then kind := Ord(scan.segments[i].kind);
+    kind := CodeKind(m, kind);
+    if kind > Ord(High(TSegmentKind)) then Exit;
+    if inRun and (TSegmentKind(kind) <> skFrame) then Exit;
+    if TSegmentKind(kind) = skFrame then
+    begin
+      h := 0;
+      if not m.decoding then h := HeaderAt(d, pos);
+      h := CodeHeader(m, h);
+      if not DecodeHeader(h, hd) then Exit;
+      freeLen := 0;
+      if not m.decoding then freeLen := Integer(scan.segments[i].length) - hd.padding * hd.slotBytes;
+      if hd.bitrateIndex = 0 then freeLen := CodeFree(m, freeLen);
+      len := FrameLength(hd, freeLen);
+      if (len < 4) or (len > total - pos) then Exit;
+      d[pos] := h shr 24; d[pos + 1] := (h shr 16) and $FF;
+      d[pos + 2] := (h shr 8) and $FF; d[pos + 3] := h and $FF;
+      if (ver >= 2) and (hd.layer = 3) then
+      begin
+        if inRun and not SameStream(run.first, hd) then Exit;
+        if not inRun then run.Start(hd);
+        if not CodeL3Frame(m, d, run, pos, len, hd) then Exit;
+        { does the run go on with the next segment? }
+        goesOn := 0;
+        if not m.decoding then
+          goesOn := Ord((i + 1 < scan.count) and (scan.segments[i + 1].kind = skFrame)
+            and DecodeHeader(HeaderAt(d, scan.segments[i + 1].offset), hn)
+            and (hn.layer = 3) and SameStream(run.first, hn));
+        inRun := m.Bit(goesOn, m.runGoesOn, LIMIT_STRUCT) = 1;
+        if not inRun then
+          CodeSlotBits(m, d, run, run.prevEnd, run.slotBytes * 8, 1);
+      end
+      else
+      begin
+        if inRun then Exit;
+        CodeBytes(m, d, pos + 4, len - 4, 0);
+      end;
+    end
+    else
+    begin
+      len := 0;
+      if not m.decoding then len := scan.segments[i].length;
+      len := CodeLength(m, len);
+      if (len < 1) or (len > total - pos) then Exit;
+      CodeBytes(m, d, pos, len, 1);
+    end;
+    Inc(pos, len);
+    Inc(i);
+  end;
+  Result := not inRun;
+end;
+
+function Encode(const d: TBytes; const scan: TMpegScan; ver: Integer): TBytes;
+var m: PModel; work, body: TBytes; n: SizeInt;
 begin
   New(m);
   try
     m^.Init(False);
     m^.enc.Init;
     work := Copy(d, 0, Length(d));
-    for i := 0 to scan.count - 1 do
-    begin
-      seg := scan.segments[i];
-      CodeKind(m^, Ord(seg.kind));
-      if seg.kind = skFrame then
-      begin
-        CodeHeader(m^, HeaderAt(d, seg.offset));
-        DecodeHeader(HeaderAt(d, seg.offset), hd);
-        if hd.bitrateIndex = 0 then
-        begin
-          freeLen := Integer(seg.length) - hd.padding * hd.slotBytes;
-          CodeFree(m^, freeLen);
-        end;
-        CodeBytes(m^, work, seg.offset + 4, seg.length - 4, 0);
-      end
-      else
-      begin
-        CodeLength(m^, seg.length);
-        CodeBytes(m^, work, seg.offset, seg.length, 1);
-      end;
-    end;
+    Walk(m^, work, Length(d), scan, ver);
     body := m^.enc.Finish;
   finally
     Dispose(m);
   end;
   Result := nil;
   SetLength(Result, 16);
-  Result[0] := STREAM_VERSION; n := 1;
+  Result[0] := ver; n := 1;
   PutVarint(Result, n, Length(d));
   SetLength(Result, n + Length(body));
   if Length(body) > 0 then Move(body[0], Result[n], Length(body));
 end;
 
 function DecodeFile(const s: TBytes; maxOut: Int64; out d: TBytes; threads: Integer): TDecodeStatus;
-var
-  m: PModel; p: SizeInt; total, pos, len: Int64; kind, freeLen: Integer;
-  h: UInt32; hd: TMpegHeader;
+var m: PModel; p: SizeInt; total: Int64; ok: Boolean; none: TMpegScan;
 begin
   d := nil;
   if Length(s) = 0 then Exit(dsEmpty);
@@ -264,38 +502,16 @@ begin
   if total < 1 then Exit(dsBadStream);
   if total > maxOut then Exit(dsTooBig);
   SetLength(d, total);
+  none.Clear;
   New(m);
   try
     m^.Init(True);
     m^.dec.Init(s, p);
-    pos := 0;
-    while pos < total do
-    begin
-      kind := CodeKind(m^, 0);
-      if kind > Ord(High(TSegmentKind)) then begin d := nil; Exit(dsBadStream); end;
-      if TSegmentKind(kind) = skFrame then
-      begin
-        h := CodeHeader(m^, 0);
-        if not DecodeHeader(h, hd) then begin d := nil; Exit(dsBadStream); end;
-        freeLen := 0;
-        if hd.bitrateIndex = 0 then freeLen := CodeFree(m^, 0);
-        len := FrameLength(hd, freeLen);
-        if (len < 4) or (len > total - pos) then begin d := nil; Exit(dsBadStream); end;
-        d[pos] := h shr 24; d[pos + 1] := (h shr 16) and $FF;
-        d[pos + 2] := (h shr 8) and $FF; d[pos + 3] := h and $FF;
-        CodeBytes(m^, d, pos + 4, len - 4, 0);
-      end
-      else
-      begin
-        len := CodeLength(m^, 0);
-        if (len < 1) or (len > total - pos) then begin d := nil; Exit(dsBadStream); end;
-        CodeBytes(m^, d, pos, len, 1);
-      end;
-      Inc(pos, len);
-    end;
+    ok := Walk(m^, d, total, none, s[0]);
   finally
     Dispose(m);
   end;
+  if not ok then begin d := nil; Exit(dsBadStream); end;
   Result := dsOk;
 end;
 
@@ -305,7 +521,7 @@ begin
   s := nil;
   ScanMpeg(d, scan);
   if scan.frames = 0 then Exit(esNotMpeg);
-  s := Encode(d, scan);
+  s := Encode(d, scan, STREAM_VERSION);
   { the one guarantee: it has to come back }
   if (DecodeFile(s, Length(d), back) <> dsOk) or (Length(back) <> Length(d))
      or not CompareMem(@back[0], @d[0], Length(d)) then
@@ -314,6 +530,14 @@ begin
     Exit(esNotBack);
   end;
   Result := esOk;
+end;
+
+function EncodeAs(const d: TBytes; ver: Integer): TBytes;
+var scan: TMpegScan;
+begin
+  ScanMpeg(d, scan);
+  if scan.frames = 0 then Exit(nil);
+  Result := Encode(d, scan, ver);
 end;
 
 function EncodeStatusName(st: TEncodeStatus): string;
