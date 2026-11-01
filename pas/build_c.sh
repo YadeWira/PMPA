@@ -23,8 +23,17 @@ if $CC --version 2>/dev/null | grep -qi clang; then
 else
   FLAGS="$FLAGS -fno-tree-loop-distribute-patterns"
 fi
+# 32-bit x86, whatever the compiler's default: no position-independent code
+# where the executable is not, and nothing newer than the i686 (a compiler
+# whose default is a Pentium 4, as MSYS2's MinGW-w64 gcc, would use SSE2,
+# and the Windows x86 build is for XP's machines too). The integers are the
+# same either way: the same streams.
+TARGET=$($CC -dumpmachine 2>/dev/null || echo unknown)
+case "$CC $* $TARGET" in
+  *-m32*|*i686*|*i386*|*i586*) FLAGS="$FLAGS -march=i686 -mtune=generic" ;;
+esac
 case "$CC $*" in
-  *-m32*|*i686*|*i386*) FLAGS="$FLAGS -fno-pic" ;;
+  *-m32*) FLAGS="$FLAGS -fno-pic" ;;
 esac
 mkdir -p "$OUT"
 # shellcheck disable=SC2086
