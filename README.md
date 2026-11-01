@@ -21,13 +21,14 @@ verified: `a` decompresses its own result and compares it with the input
 first, and `x` checks the size and the BLAKE3 hash the `.pmpa` carries.
 
 A file with no MPEG audio frame is refused: PMPA is not a general
-compressor. The command is described in [doc/CLI.md](doc/CLI.md), the file
+compressor ([what it takes][wHandles]). The [wiki][wHome] has how to use it,
+build it, and how it works. The command is described in [doc/CLI.md](doc/CLI.md), the file
 in [doc/FORMAT.md](doc/FORMAT.md), the codec in [doc/CODEC.md](doc/CODEC.md).
 
 **Status: in development.** The container and the command work end to end,
 and every layer is modelled: Layer III files come out at 84.07% of their
 size, where packMP3 3.0f makes 84.36%, and Layer II at 72.13%, where
-packMP2 0.8 makes 76.95% at best (measured 01/11/2026,
+packMP2 0.8 makes 76.95% at best (measured 01/11/2026, [how][wBench];
 [doc/CODEC.md](doc/CODEC.md)). It is slow for now: about 0.65 MB/s to
 compress a file on 2 threads and to extract it on one, where packMP3
 does about 3 MB/s. Built bottom-up, each layer with its tests:
@@ -57,3 +58,7 @@ Needs [Free Pascal](https://www.freepascal.org) 3.2.2.
 ## License
 
 MIT; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+[wHome]: https://github.com/YadeWira/PMPA/wiki
+[wBench]: https://github.com/YadeWira/PMPA/wiki/Benchmarks
+[wHandles]: https://github.com/YadeWira/PMPA/wiki/What-PMPA-handles
