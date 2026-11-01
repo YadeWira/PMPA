@@ -7,9 +7,7 @@ x86-64 assembly; no libraries.
 The successor of [packMP3](https://github.com/YadeWira/packMP3) and
 [packMP2](https://github.com/YadeWira/packMP2): written from scratch, with
 a codec and container of its own; it shares no code with them and does not
-read their files. A sibling of [PJA](https://github.com/YadeWira/PJA) (JPEG),
-[PPA](https://github.com/YadeWira/PPA) (PNG) and
-[PRA](https://github.com/YadeWira/PRA) (raster images).
+read their files.
 
 ```sh
 pmpa a song.mp3          # -> song.pmpa
@@ -19,6 +17,18 @@ pmpa x song.pmpa         # -> song.mp3, the same file byte for byte
 The original comes back **byte for byte**, and nothing is written unless it
 verified: `a` decompresses its own result and compares it with the input
 first, and `x` checks the size and the BLAKE3 hash the `.pmpa` carries.
+
+## The family
+
+PMPA belongs to a family of recompressors that share that rule.
+
+| Sibling | Formats | Successor of |
+|---|---|---|
+| **PMPA** | MPEG audio (MP1, MP2, MP3) | [packMP3](https://github.com/YadeWira/packMP3), [packMP2](https://github.com/YadeWira/packMP2) |
+| [PRA](https://github.com/YadeWira/PRA) | raster images (PNM, BMP, HDR, TGA, PCX, ...) | packPNM |
+| [PPA](https://github.com/YadeWira/PPA) | the PNG family (PNG, APNG, MNG, JNG) | [packPNG](https://github.com/YadeWira/packPNG) |
+| [PAIA](https://github.com/YadeWira/PAIA) | animated images (GIF, WebP, FLI/FLC, ANI, ...) | (new) |
+| [PJA](https://github.com/YadeWira/PJA) | JPEG and JPEG-LS | [packJPG](https://github.com/YadeWira/packJPG) |
 
 A file with no MPEG audio frame is refused: PMPA is not a general
 compressor ([what it takes][wHandles]). The [wiki][wHome] has how to use it,
