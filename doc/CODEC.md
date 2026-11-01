@@ -199,3 +199,62 @@ built with `-dPMPA_COSTS`): magnitudes 37.8% of the input, zero flags
 **Speed is the price for now:** the corpus takes 31 s to compress (which
 decodes to verify) and 13 s to extract on 8 threads, one file a thread;
 packMP3 does a 6.5 MB file in 2 s. Every decision mixes ten counters.
+
+## The stream, version 5: Layer I and II (`pas/pmpal12.pas`)
+
+After its header (and CRC) a Layer I or II frame is its bit allocation,
+Layer II's scfsi, its scale factors and its samples, then ancillary data.
+Every field has a fixed length once the allocation is known, so
+`pmpal12` writes back exactly what it reads. Layer II's allocation tables
+(ISO/IEC 11172-3 B.2a to B.2d, 13818-3 B.1) are chosen by the bitrate per
+channel and the sample rate (by the frame's length, in free format).
+
+A grouped code word above what its levels allow (3 levels in 5 bits can
+say up to 26, and some encoders write 27 to 31) is kept as it is: 280
+frames of the real streams below have one. Parsing fails only when the
+fields do not fit in the frame, or an allocation is not in the table; such
+a frame is coded as bytes, after a decision that says so.
+
+Version 5 codes, by mixing (`pmpamodel`):
+
+- the **allocation**, subband by subband, in the context of the last
+  frame's allocation in that subband, the subband before and the other
+  channel;
+- the **scfsi** and the **scale factors** that scfsi sends, by the last
+  frame's, the one before in this subband and frame, the subband before
+  and the other channel;
+- the **samples**, subband by subband in time order, centred on their
+  middle level: zero or not, the sign, the bit length of the magnitude and
+  the bits below its top one. The contexts are the two samples before
+  (the last frame's at the start) on a signed log scale, their linear
+  prediction 2 x[i-1] - x[i-2], their magnitudes and the subband, the other
+  channel's sample at the same time, and the scale factor; the mixer's
+  weights are chosen by the quantization class and the decision;
+- the **CRC** as one decision, and the **ancillary data** as bits.
+
+The signs and the prediction are what pays: with magnitudes only as
+contexts the 10 files below were 83.27% of their size, with the signed
+samples before and the prediction 76.50%.
+
+The local corpus has 13 Layer II files and no Layer I. The streams below
+come from samples.ffmpeg.org (not part of this repository): its MPEG-1 and
+MPEG-2 programs, transport streams, VCD and SVCD captures and AVI files
+with MPEG audio, the audio taken out with `ffmpeg -c copy` (the encoders'
+frames as they are), and its three Layer I streams. A stream labelled MP2
+that holds AC-3 (a sample of a bug report) is left out, and of two copies
+of one stream, one.
+
+Measured with `scripts/measure.sh` on 01/11/2026 (8 threads, other work
+running); packMP2 0.8 on the same files (`u`, then `c -O`; a file it
+cannot take counts at its own size: one):
+
+| set | files | size | version 4 | version 5 | packMP2, zpaq 5 | packMP2, zstd 9 |
+|---|---|---|---|---|---|---|
+| Layer II from samples.ffmpeg.org | 53 | 42.9 MB | | 72.08% | 76.95% | 87.07% |
+| Layer I from samples.ffmpeg.org | 3 | 1.1 MB | | 51.57% | | |
+| the local corpus's Layer II files | 13 | 7.2 MB | 97.15% | 78.37% | | |
+| the local corpus's MPEG files | 24 | 31.4 MB | 87.03% | 82.75% | | |
+
+`test_l12` reads and writes back every Layer I and II frame of those
+streams and the corpus (99,598 of 99,599: the one left is cut short in a
+transport stream), and every CRC matches.

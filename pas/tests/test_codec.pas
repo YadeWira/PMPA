@@ -7,7 +7,7 @@
     test_codec <dir>... }
 program test_codec;
 {$I ../pmpa.inc}
-uses SysUtils, Classes, pmpablake3, pmpampeg, pmpacodec;
+uses SysUtils, Classes, pmpablake3, pmpampeg, pmpal3, pmpal12, pmpacodec;
 
 var cells, failures: Integer;
 
@@ -40,7 +40,8 @@ var
   files: TStringList; sr: TSearchRec; i, k, n, bit, nOk, nRefused: Integer;
   d, s, back, bad: TBytes; st: TEncodeStatus; ds: TDecodeStatus;
   inBytes, outBytes: Int64; digest: TBlake3; h: THash16; hex: string;
-  seed: Cardinal; survived: Boolean; scan: TMpegScan;
+  seed: Cardinal; survived, ok, placed: Boolean; scan: TMpegScan; hd: TMpegHeader;
+  fr: TL12Frame; q: TQClass; bw: TBitWriter;
 begin
   cells := 0; failures := 0;
   files := TStringList.Create;
@@ -94,6 +95,36 @@ begin
       st := EncodeFile(d, s);
       Check((st = esOk) and (DecodeFile(s, Length(d), back) = dsOk) and Same(d, back),
         'a wrong CRC in a Layer III frame');
+    end;
+
+  { a Layer II code word above what its levels allow (real encoders write
+    a few): the 10th frame of a Layer II sample gets one, written by
+    pmpal12 itself, and the file must come back }
+  for i := 0 to files.Count - 1 do
+    if ExtractFileName(files[i]) = 'l2_192k_48k_stereo.mp2' then
+    begin
+      d := LoadFile(files[i]);
+      ScanMpeg(d, scan);
+      DecodeHeader(HeaderAt(d, scan.segments[9].offset), hd);
+      ok := ParseL12(d, scan.segments[9].offset, scan.segments[9].length, hd, fr);
+      placed := False;
+      if ok then
+        for k := 0 to fr.sblimit - 1 do
+          if not placed and (fr.alloc[0, k] <> 0) and (QClass(fr.table, k, fr.alloc[0, k]).levels > 0) then
+          begin
+            q := QClass(fr.table, k, fr.alloc[0, k]);
+            fr.smp[0, k, 3] := q.levels * q.levels * q.levels;   { the first word above }
+            fr.smp[0, k, 4] := -1; fr.smp[0, k, 5] := -1;
+            bw.Init(scan.segments[9].length);
+            WriteL12(fr, bw);
+            for n := 0 to Integer(bw.pos - 1) shr 3 do d[scan.segments[9].offset + 4 + n] := bw.d[n];
+            placed := True;
+          end;
+      Check(placed, 'a grouped code word above its levels, placed');
+      ok := ParseL12(d, scan.segments[9].offset, scan.segments[9].length, hd, fr) and (fr.oddCodes = 1);
+      st := EncodeFile(d, s);
+      Check(ok and (st = esOk) and (DecodeFile(s, Length(d), back) = dsOk) and Same(d, back),
+        '  it is read as one, and the file comes back');
     end;
 
   Writeln('earlier versions are still read');

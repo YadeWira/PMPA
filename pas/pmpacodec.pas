@@ -48,10 +48,10 @@ unit pmpacodec;
 
 interface
 
-uses SysUtils, pmpampeg, pmpal3, pmpahuff;
+uses SysUtils, pmpampeg, pmpal3, pmpahuff, pmpal12;
 
 const
-  STREAM_VERSION = 4;
+  STREAM_VERSION = 5;
   PMPA_VERSION = '0.1.0';
 
 type
@@ -74,15 +74,15 @@ function DecodeStatusName(st: TDecodeStatus): string;
 
 {$ifdef PMPA_COSTS}
 const
-  COST_NAMES: array[0..31] of string = ('structure', 'other bytes', 'side info', 'filler',
+  COST_NAMES: array[0..32] of string = ('structure', 'other bytes', 'side info', 'filler',
     'scalefactors', 'raw granules', 'zero flags', 'magnitudes', 'signs', 'tails',
     ' si mdb', ' si private', ' si scfsi', ' si part23', ' si bigvalues', ' si gain',
     ' si sfcompress', ' si winswitch', ' si blocktype', ' si mixed', ' si table0',
     ' si table1', ' si table2', ' si subgain', ' si region0', ' si region1', ' si preflag',
-    ' si sfscale', ' si count1tab', ' si crc', ' quads', ' tail length');
+    ' si sfscale', ' si count1tab', ' si crc', ' quads', ' tail length', 'L12 allocation');
 var
   { what encoding cost, in bits, by part (the tools' build only) }
-  Costs: array[0..31] of Double;
+  Costs: array[0..32] of Double;
 {$endif}
 
 implementation
@@ -99,8 +99,8 @@ const
   F_MDB = 0; F_PRIV = 1; F_SCFSI = 2; F_PART23 = 3; F_BIGV = 4; F_GAIN = 5;
   F_SFC = 6; F_WS = 7; F_BT = 8; F_MIX = 9; F_TAB = 10; { 10, 11, 12 }
   F_SUBG = 13; F_R0 = 14; F_R1 = 15; F_PRE = 16; F_SFS = 17; F_C1 = 18; F_CRC = 19;
-  F_QUADS = 20; F_TAIL = 21;
-  N_FIELDS = 22;
+  F_QUADS = 20; F_TAIL = 21; F_ODD = 22;
+  N_FIELDS = 23;
   { the values' contexts: how many of each }
   N_CAP = 7;      { what the table allows: 1, 2, 3, 5, 7, 15, 15 and linbits }
   N_NB = 8;       { the two values before }
@@ -110,7 +110,8 @@ const
   V_TABLE_BITS = 20;
   V_INPUTS = 11;  { 10 counters and a bias }
   S_INPUTS = 5;
-  EST_BUCKETS = 14;   { the scalefactors: 4 counters and a bias }
+  EST_BUCKETS = 14;
+  L_INPUTS = 7;   { Layer I and II: 6 counters and a bias }   { the scalefactors: 4 counters and a bias }
   { MPEG-1's preemphasis, added to a long band's scalefactor when preflag }
   PRETAB: array[0..21] of Integer = (0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,2,2,3,3,3,2,0);
   V_LIMIT = 255;
@@ -155,6 +156,10 @@ type
     lastScf: array[0..1, 0..2, 0..63] of Integer;   { by channel, block kind, place }
     scf: array[0..1, 0..63] of Integer;             { the last granule's of each channel, whole }
     prevStep: array[0..1, 0..575] of Integer;
+    { version 5: Layer I and II }
+    lmix: TMixer;
+    l12modelled, oddCode: TAdaptiveBit;
+    lastL12: TL12Frame;
     hist: Integer;
     lastSlotBit: Int64;
     lastSi: TSideInfo;
@@ -214,6 +219,9 @@ begin
   FillChar(lastScf, SizeOf(lastScf), 0);
   FillChar(scf, SizeOf(scf), 0);
   FillChar(prevStep, SizeOf(prevStep), 0);
+  lmix.Init(L_INPUTS, 32 + 4 * 32, V_MIX_RATE);
+  l12modelled.Init; oddCode.Init;
+  lastL12 := Default(TL12Frame);
   lastGain[0] := 0; lastGain[1] := 0;
   FillChar(curVals, SizeOf(curVals), 0);
   lastSi := Default(TSideInfo);
@@ -1004,17 +1012,312 @@ end;
 
 { a frame's CRC, once its header and side information are in d: one
   decision when it is the one they give, else its 16 bits }
-procedure CodeCrc(var m: TModel; var d: TBytes; pos, siAt: Int64; const hd: TMpegHeader);
+procedure CodeCrc(var m: TModel; var d: TBytes; pos, siAt: Int64; const hd: TMpegHeader; bits: Integer = -1);
 var crc, stored, ok: Integer;
 begin
   if not hd.hasCrc then Exit;
   Part(2);
-  crc := MpegCrc(HeaderAt(d, pos), d, siAt, hd.sideInfoBytes * 8);
+  if bits < 0 then bits := hd.sideInfoBytes * 8;
+  crc := MpegCrc(HeaderAt(d, pos), d, siAt, bits);
   stored := (d[pos + 4] shl 8) or d[pos + 5];
   ok := m.Bit(Ord(stored = crc), m.crcOk, LIMIT_STRUCT);
   if ok = 1 then stored := crc
   else stored := CodeField(m, stored, 16, F_CRC, crc);
   d[pos + 4] := stored shr 8; d[pos + 5] := stored and $FF;
+end;
+
+{ ---------- Layer I and II (version 5) ---------- }
+
+{ the bits [a, b) of the file from its byte `first`, as CodeSlotBits codes
+  the slot stream's: in the context of their byte's bits so far }
+procedure CodeFrameBits(var m: TModel; var d: TBytes; first, a, b: Int64; cls: Integer);
+var bit, at: Int64; sh, v: Integer;
+begin
+  bit := a;
+  while bit < b do
+  begin
+    at := first + bit shr 3;
+    sh := 7 - Integer(bit and 7);
+    if (sh = 7) or (bit = a) then m.hist := 1;
+    v := (d[at] shr sh) and 1;
+    v := m.Bit(v, m.slot[cls, m.hist], LIMIT_BYTES);
+    if m.decoding and (v = 1) then d[at] := d[at] or (1 shl sh);
+    m.hist := m.hist * 2 + v;
+    Inc(bit);
+  end;
+  m.lastSlotBit := -2;
+end;
+
+{ a value of n bits (n <= 16), most significant first, each bit mixing the
+  contexts c0..c4 (with what is decided so far) and the mixer's set `sel` }
+function CodeL12Value(var m: TModel; v, n, sel: Integer; c0, c1, c2, c3, c4: Cardinal): Integer;
+var bit, node: Integer; hs: array[0..5] of Cardinal;
+begin
+  node := 1;
+  for bit := n - 1 downto 0 do
+  begin
+    hs[0] := Hash3(c0, node, 1);
+    hs[1] := Hash3(c1, node, 2);
+    hs[2] := Hash3(c2, node, 3);
+    hs[3] := Hash3(c3, node, 4);
+    hs[4] := Hash3(c4, node, 5);
+    hs[5] := Hash3(sel, node, 6);
+    node := node * 2 + Decide(m, m.lmix, (v shr bit) and 1, hs, sel);
+    if node >= 1 shl 16 then node := node and $FFFF or $10000;
+  end;
+  Result := node - (1 shl n);
+end;
+
+{ a sample, centred: zero or not, the sign, the magnitude's bit length and
+  the bits below its top one; `top` the largest magnitude there can be.
+  Each decision mixes the contexts c0..c4 (with the decision and what is
+  decided so far), with the mixer's set of the class and the decision. }
+function CodeSample(var m: TModel; x, top, cls: Integer; c0, c1, c2, c3, c4: Cardinal): Integer;
+var a, L, maxL, bit, k, sg: Integer; hs: array[0..5] of Cardinal;
+
+  function D(id, prefix, b: Integer): Integer;
+  begin
+    hs[0] := Hash4(c0, id, prefix, 11);
+    hs[1] := Hash4(c1, id, prefix, 12);
+    hs[2] := Hash4(c2, id, prefix, 13);
+    hs[3] := Hash4(c3, id, prefix, 14);
+    hs[4] := Hash4(c4, id, prefix, 15);
+    hs[5] := Hash4(cls, id, prefix, 16);
+    if id > 3 then id := 3;
+    Result := Decide(m, m.lmix, b, hs, 32 + cls * 4 + id);
+  end;
+
+begin
+  a := Abs(x);
+  Part(6);
+  if D(0, 0, Ord(a > 0)) = 0 then Exit(0);
+  Part(8);
+  sg := D(1, 0, Ord(x < 0));
+  Part(7);
+  maxL := BitLen(top);
+  L := 1;
+  while (L < maxL) and (D(2, L, Ord(BitLen(a) > L)) = 1) do Inc(L);
+  k := 1;
+  for bit := L - 2 downto 0 do
+    k := k * 2 + D(3 + L, k and 255, (a shr bit) and 1);
+  if sg = 1 then Result := -k else Result := k;
+end;
+
+{ a signed value on a signed log scale: 0, +-1, +-2, +-3..4, +-5..8, ...,
+  as 0..16 }
+function SLog(v: Integer): Integer;
+var b: Integer;
+begin
+  if v = 0 then Exit(8);
+  b := BitLen(Abs(v) - 1) + 1;            { 1 for 1, 2 for 2, 3 for 3-4, 4 for 5-8 }
+  if b > 8 then b := 8;
+  if v > 0 then Result := 8 + b else Result := 8 - b;
+end;
+
+{ every field of a Layer I or II frame; decoding fills f }
+function CodeL12Fields(var m: TModel; var f: TL12Frame; const hd: TMpegHeader): Boolean;
+var
+  sb, ch, chs, i, nb, n, mid, top, x, ci, prev, other, near, x1, x2, xo: Integer; q: TQClass;
+  last: ^TL12Frame; lc: Integer;
+
+  { the centre of channel c's samples in subband sb }
+  function MidOf(c: Integer): Integer;
+  var qq: TQClass;
+  begin
+    if f.layer = 1 then Result := (1 shl f.alloc[c, sb]) - 1
+    else
+    begin
+      qq := QClass(f.table, sb, f.alloc[c, sb]);
+      if qq.levels > 0 then Result := (qq.levels - 1) div 2 else Result := (1 shl (qq.bits - 1)) - 1;
+    end;
+  end;
+
+  { the sample k before sample i of (ch, sb), centred: from this frame, or
+    the last frame's end (already centred there); 0 if there is none }
+  function Before(k: Integer): Integer;
+  begin
+    if i - k >= 0 then
+    begin
+      if f.smp[ch, sb, i - k] < 0 then Result := 0 else Result := f.smp[ch, sb, i - k] - mid;
+    end
+    else if last^.alloc[ch, sb] <> 0 then Result := last^.smp[ch, sb, n + i - k]
+    else Result := 0;
+  end;
+
+begin
+  Result := False;
+  last := @m.lastL12;
+  lc := f.layer * 8 + (f.table + 1);
+  { the allocation }
+  Part(32);
+  for sb := 0 to f.sblimit - 1 do
+  begin
+    if sb < f.bound then chs := f.nch else chs := 1;
+    if f.layer = 1 then nb := 4 else nb := AllocBits(f.table, sb);
+    for ch := 0 to chs - 1 do
+    begin
+      prev := last^.alloc[ch, sb];
+      if sb > 0 then near := f.alloc[ch, sb - 1] else near := 99;
+      if ch = 1 then other := f.alloc[0, sb] else other := 99;
+      f.alloc[ch, sb] := CodeL12Value(m, f.alloc[ch, sb], nb, 0,
+        Hash3(lc, sb, prev), Hash3(lc, sb, near), Hash3(lc, sb, other),
+        Hash4(lc, prev, near, other), Hash3(lc, sb, 0));
+      if f.layer = 1 then begin if f.alloc[ch, sb] = 15 then Exit; end
+      else if (f.alloc[ch, sb] <> 0) and (QClass(f.table, sb, f.alloc[ch, sb]).levels < 0) then Exit;
+    end;
+    if chs < f.nch then f.alloc[1, sb] := f.alloc[0, sb];
+  end;
+  { scfsi }
+  if f.layer = 2 then
+    for sb := 0 to f.sblimit - 1 do
+      for ch := 0 to f.nch - 1 do
+        if f.alloc[ch, sb] <> 0 then
+        begin
+          if sb > 0 then near := f.scfsi[ch, sb - 1] else near := 9;
+          f.scfsi[ch, sb] := CodeL12Value(m, f.scfsi[ch, sb], 2, 1,
+            Hash3(lc, sb, last^.scfsi[ch, sb]), Hash3(lc, sb, near), Hash3(lc, 100 + ch, near),
+            Hash4(lc, last^.scfsi[ch, sb], near, f.alloc[ch, sb]), Hash3(lc, sb, f.alloc[ch, sb]));
+        end;
+  { the scale factors: the ones each scfsi sends }
+  Part(4);
+  for sb := 0 to f.sblimit - 1 do
+    for ch := 0 to f.nch - 1 do
+      if f.alloc[ch, sb] <> 0 then
+      begin
+        if f.layer = 1 then n := 1 else n := 3;
+        for i := 0 to n - 1 do
+        begin
+          if f.layer = 2 then
+            case f.scfsi[ch, sb] of
+              1: if i = 1 then begin f.scf[ch, sb, 1] := f.scf[ch, sb, 0]; Continue; end;
+              2: if i > 0 then begin f.scf[ch, sb, i] := f.scf[ch, sb, 0]; Continue; end;
+              3: if i = 2 then begin f.scf[ch, sb, 2] := f.scf[ch, sb, 1]; Continue; end;
+            end;
+          if i > 0 then near := f.scf[ch, sb, i - 1]
+          else if last^.alloc[ch, sb] <> 0 then near := last^.scf[ch, sb, 2]
+          else near := 99;
+          if sb > 0 then prev := f.scf[ch, sb - 1, i] else prev := 99;
+          if (ch = 1) and (f.alloc[0, sb] <> 0) then other := f.scf[0, sb, i] else other := 99;
+          f.scf[ch, sb, i] := CodeL12Value(m, f.scf[ch, sb, i], 6, 2,
+            Hash3(lc, sb, near), Hash3(lc, prev, near), Hash3(lc, sb, other),
+            Hash4(lc, near, other, i), Hash4(lc, sb, prev, i));
+        end;
+      end;
+  { the samples, subband by subband, in time order }
+  for sb := 0 to f.sblimit - 1 do
+  begin
+    if sb < f.bound then chs := f.nch else chs := 1;
+    for ch := 0 to chs - 1 do
+    begin
+      if f.alloc[ch, sb] = 0 then Continue;
+      if f.layer = 1 then
+      begin
+        n := 12; nb := f.alloc[ch, sb] + 1; mid := (1 shl (nb - 1)) - 1; top := mid + 1; ci := 15 + nb;
+      end
+      else
+      begin
+        n := 36;
+        q := QClass(f.table, sb, f.alloc[ch, sb]);
+        if q.levels > 0 then begin mid := (q.levels - 1) div 2; top := mid; ci := q.levels div 4; end
+        else begin mid := (1 shl (q.bits - 1)) - 1; top := mid + 1; ci := q.bits; end;
+      end;
+      i := 0;
+      while i < n do
+      begin
+        { a grouped code word above its levels: kept as it is }
+        if (f.layer = 2) and (q.levels > 0) and (i mod 3 = 0) then
+        begin
+          Part(5);
+          if m.Bit(Ord(f.smp[ch, sb, i + 1] < 0), m.oddCode, LIMIT_STRUCT) = 1 then
+          begin
+            f.smp[ch, sb, i] := CodeField(m, f.smp[ch, sb, i], q.bits, F_ODD, 0);
+            if f.smp[ch, sb, i] < q.levels * q.levels * q.levels then Exit;
+            f.smp[ch, sb, i + 1] := -1; f.smp[ch, sb, i + 2] := -1;
+            Inc(i, 3);
+            Continue;
+          end;
+        end;
+        { the two samples before (the last frame's at the start), centred;
+          the other channel's at this time; the scale factor }
+        x1 := Before(1); x2 := Before(2);
+        if (ch = 1) and (f.alloc[0, sb] <> 0) and (f.smp[0, sb, i] >= 0) then
+          xo := SLog(f.smp[0, sb, i] - MidOf(0)) else xo := 99;
+        x := f.smp[ch, sb, i] - mid;
+        x := CodeSample(m, x, top, ci,
+          Hash4(ci, SLog(x1), SLog(x2), 1),
+          Hash4(ci, SLog(2 * x1 - x2), sb shr 2, 2),
+          Hash4(ci, sb, Min7(Abs(x1)), Min7(Abs(x2))),
+          Hash4(ci, xo, SLog(x1), 4),
+          Hash4(ci, f.scf[ch, sb, i * 3 div n] shr 2, Min7(Abs(x1)), 5));
+        if (x + mid < 0) or (x + mid > 2 * mid + 1) or ((q.levels > 0) and (f.layer = 2) and (x + mid >= q.levels)) then Exit;
+        f.smp[ch, sb, i] := x + mid;
+        Inc(i);
+      end;
+    end;
+    if chs < f.nch then
+      for i := 0 to 35 do f.smp[1, sb, i] := f.smp[0, sb, i];
+  end;
+  { the context of the next frame: the centred magnitudes }
+  m.lastL12 := f;
+  for sb := 0 to f.sblimit - 1 do
+    for ch := 0 to f.nch - 1 do
+      if f.alloc[ch, sb] <> 0 then
+      begin
+        if f.layer = 1 then mid := (1 shl f.alloc[ch, sb]) - 1
+        else
+        begin
+          q := QClass(f.table, sb, f.alloc[ch, sb]);
+          if q.levels > 0 then mid := (q.levels - 1) div 2 else mid := (1 shl (q.bits - 1)) - 1;
+        end;
+        for i := 0 to 35 do
+          if f.smp[ch, sb, i] >= 0 then m.lastL12.smp[ch, sb, i] := f.smp[ch, sb, i] - mid
+          else m.lastL12.smp[ch, sb, i] := 0;
+      end;
+  Result := True;
+end;
+
+{ a Layer I or II frame's bytes after its header: modelled, or as bytes }
+function CodeL12Frame(var m: TModel; var d: TBytes; pos, len: Int64; const hd: TMpegHeader): Boolean;
+var f: TL12Frame; ok, first, j: Integer; w: TBitWriter;
+begin
+  Result := False;
+  ok := 0;
+  f := Default(TL12Frame);
+  if not m.decoding then ok := Ord(ParseL12(d, pos, len, hd, f));
+  Part(0);
+  if m.Bit(ok, m.l12modelled, LIMIT_STRUCT) = 0 then
+  begin
+    Part(1);
+    CodeBytes(m, d, pos + 4, len - 4, 0);
+    Exit(True);
+  end;
+  first := 4 + 2 * Ord(hd.hasCrc);
+  if m.decoding then
+  begin
+    { the frame's shape, as ParseL12 sets it }
+    f.layer := hd.layer; f.nch := hd.channels;
+    if f.layer = 1 then begin f.sblimit := 32; f.table := -1; end
+    else L2Table(hd, len, f.table, f.sblimit);
+    if hd.mode = 1 then f.bound := 4 * (hd.modeExt + 1) else f.bound := 32;
+    if f.bound > f.sblimit then f.bound := f.sblimit;
+  end;
+  if not CodeL12Fields(m, f, hd) then Exit;
+  if m.decoding then
+  begin
+    w.Init(len);
+    WriteL12(f, w);
+    if w.pos > (len - first) * 8 then Exit;
+    for j := 0 to Integer((w.pos + 7) shr 3) - 1 do d[pos + first + j] := w.d[j];
+    f.endBit := first * 8 + Integer(w.pos);
+    { the CRC's bits: up to the end of the scfsi, which ParseL12 would say }
+    if hd.hasCrc then
+      if not ParseL12(d, pos, len, hd, f) then Exit;
+  end;
+  CodeCrc(m, d, pos, pos + 6, hd, f.crcBits);
+  { the ancillary data }
+  Part(3);
+  CodeFrameBits(m, d, pos, f.endBit, len * 8, 1);
+  Result := True;
 end;
 
 { a Layer III frame's bytes after its header, the frame at pos of len bytes;
@@ -1176,8 +1479,15 @@ begin
       else
       begin
         if inRun then Exit;
-        Part(1);
-        CodeBytes(m, d, pos + 4, len - 4, 0);
+        if ver >= 5 then
+        begin
+          if not CodeL12Frame(m, d, pos, len, hd) then Exit;
+        end
+        else
+        begin
+          Part(1);
+          CodeBytes(m, d, pos + 4, len - 4, 0);
+        end;
       end;
     end
     else

@@ -25,11 +25,11 @@ compressor. The command is described in [doc/CLI.md](doc/CLI.md), the file
 in [doc/FORMAT.md](doc/FORMAT.md), the codec in [doc/CODEC.md](doc/CODEC.md).
 
 **Status: in development.** The container and the command work end to end,
-and Layer III is modelled, but not yet Layer I and II: on the 24 files with
-MPEG audio of a local sample corpus (31.4 MB), the `.pmpa` files are 87.03%
-of the originals; its 11 Layer III files 84.04%, where packMP3 3.0f makes
-84.36% (measured 01/11/2026, [doc/CODEC.md](doc/CODEC.md)). It is slow for
-now: about 1 MB/s to compress, on one thread a file. Built bottom-up, each layer with its tests:
+and every layer is modelled: Layer III files come out at 84.04% of their
+size, where packMP3 3.0f makes 84.36%, and Layer II at 72.08%, where
+packMP2 0.8 makes 76.95% at best (measured 01/11/2026,
+[doc/CODEC.md](doc/CODEC.md)). It is slow for now: about 1 MB/s to
+compress, on one thread a file. Built bottom-up, each layer with its tests:
 
 | Layer | Unit | Status |
 |---|---|---|
@@ -41,8 +41,8 @@ now: about 1 MB/s to compress, on one thread a file. Built bottom-up, each layer
 | the `.pmpa` container and the `pmpa` command | `pas/pmpaformat.pas`, `pas/pmpapack.pas`, `pas/pmpafs.pas`, `pas/pmpacli.pas` | done, from PJA by way of PRA |
 | version 3: Layer III's Huffman-coded values decoded and modelled, coded again exactly | `pas/pmpahuff.pas` | done, a first model |
 | version 4: Layer III mixed (values, signs, scalefactors), part2_3_length derived | `pas/pmpamodel.pas` | done |
-| Layer I and II: bit allocation, scalefactors, samples | | next |
-| speed | | |
+| version 5: Layer I and II (allocation, scale factors, samples) | `pas/pmpal12.pas` | done |
+| speed | | next |
 
 ## Building and testing
 
