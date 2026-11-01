@@ -60,6 +60,21 @@ check "20 runs of x and a with -th 8: no thread trips over another" bash -c "
     '$PMPA' a -q -th 8 '$W'/in/*.mp? -o '$W/race/p/' || exit 1
   done"
 
+# a file of two bands or more is coded on every thread before the small
+# ones: a 4.3 MB one (a sample 250 times over) among small ones, lines in
+# the order of the inputs, every file back
+python3 -I -c "
+import sys; d = open(sys.argv[1], 'rb').read(); open(sys.argv[2], 'wb').write(d * 250)" "$W/in/l3_cbr128_44k_joint.mp3" "$W/big.mp3"
+mkdir -p "$W/mixin"; cp "$W/in/l2_64k_32k_mono_crc.mp2" "$W/mixin/a.mp2"; cp "$W/big.mp3" "$W/mixin/b.mp3"; cp "$W/in/l1_192k_44k_stereo.mp1" "$W/mixin/c.mp1"
+check "a big file among small ones, -th 4: lines in the order of the inputs" bash -c "
+  '$PMPA' a -th 4 '$W'/mixin/* -o '$W/mixp/' | sed 's/ ->.*//' > '$W/mix.txt' &&
+  ls '$W'/mixin/* > '$W/mix_in.txt' && cmp -s '$W/mix.txt' '$W/mix_in.txt'"
+check "  and every file back, on 4 threads" bash -c "
+  '$PMPA' x -q -th 4 '$W'/mixp/*.pmpa -o '$W/mixx/' &&
+  cmp -s '$W/mixin/a.mp2' '$W/mixx/a.mp2' && cmp -s '$W/mixin/b.mp3' '$W/mixx/b.mp3' && cmp -s '$W/mixin/c.mp1' '$W/mixx/c.mp1'"
+check "  the big file's .pmpa the same on 1 thread" bash -c "
+  '$PMPA' a -q -th 1 '$W/mixin/b.mp3' -o '$W/b1.pmpa' && cmp -s '$W/b1.pmpa' '$W/mixp/b.pmpa'"
+
 echo "--- existing outputs"
 cp "$W/in/l2_64k_32k_mono_crc.mp2" "$W/g.mp2"; "$PMPA" a -q "$W/g.mp2"
 echo old > "$W/g.mp2"

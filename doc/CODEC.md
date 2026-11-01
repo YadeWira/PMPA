@@ -394,3 +394,11 @@ load of 14 to 74):
 
 With more files than threads each file gets one thread, as before, and
 the bands of a file are coded one after the other.
+
+Tried and dropped (01/11/2026): the command taking the files of two bands
+or more one after another, each on every thread, before the others. On the
+corpus, alternating rounds with the version without it at a low load:
+compress 19.6 s against 19.4 to 20.0, extract 7.4 to 8.1 s against 5.7 s.
+A file of 3 or 4 bands keeps 3 or 4 of 8 threads busy, where all the
+files at once kept all 8. Doing better needs one pool of bands for every
+file, across the command, packing and the codec.
