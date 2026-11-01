@@ -9,6 +9,11 @@ The successor of [packMP3](https://github.com/YadeWira/packMP3) and
 a codec and container of its own; it shares no code with them and does not
 read their files.
 
+| Component | Status |
+|---|---|
+| CI | [![CI][ciBadge]][ciLink] |
+| Latest release | [![Release][relBadge]][relLink] |
+
 ```sh
 pmpa a song.mp3          # -> song.pmpa
 pmpa x song.pmpa         # -> song.mp3, the same file byte for byte
@@ -35,13 +40,38 @@ compressor ([what it takes][wHandles]). The [wiki][wHome] has how to use it,
 build it, and how it works. The command is described in [doc/CLI.md](doc/CLI.md), the file
 in [doc/FORMAT.md](doc/FORMAT.md), the codec in [doc/CODEC.md](doc/CODEC.md).
 
-**Status: in development.** The container and the command work end to end,
-and every layer is modelled: Layer III files come out at 84.12% of their
-size, where packMP3 3.0f makes 84.36%, and Layer II at 72.17%, where
-packMP2 0.8 makes 76.95% at best (measured 01/11/2026, [how][wBench];
-[doc/CODEC.md](doc/CODEC.md)). A 6.5 MB MP3 compresses in 3.6 s and
-extracts in 1.6 s on 4 threads (in bands of 2 MiB), 12.1 s and 5.2 s on
-one; packMP3 compresses it in 2 s. Built bottom-up, each layer with its tests:
+## Against packMP3 and packMP2
+
+Measured on 01/11/2026 ([how][wBench]), every file compressed, extracted
+and compared with its original:
+
+| set | files | size | packMP3 3.0f | packMP2 0.8 (best) | PMPA 0.1.0 |
+|---|---|---|---|---|---|
+| Layer III (MP3), a public sample corpus | 11 | 24.2 MB | 84.36% (stores one as it is) | | **84.12%** |
+| Layer II (MP2), from samples.ffmpeg.org | 53 | 42.9 MB | | 76.95% (takes 52) | **72.17%** |
+| Layer I (MP1), from samples.ffmpeg.org | 3 | 1.1 MB | | | **51.58%** |
+
+PMPA is slower: a 6.5 MB MP3 compresses in 3.6 s and extracts in 1.6 s on
+4 threads (in bands of 2 MiB), 12.1 s and 5.2 s on one, where packMP3
+compresses it in 2 s.
+
+## Install
+
+Download the command for your platform from the [latest release][relLink]:
+Linux (x86-64, x86, arm64), macOS (Apple silicon) or Windows (x64, and x86
+from XP on). Each build is tested by CI on its own platform, and the
+Windows ones on Windows 10 and 7 too (x86 on XP as well); a `.pmpa` made on
+one opens on any other ([installing][wInstall]).
+
+```sh
+pmpa a *.mp3 --output-dir=packed   # compress many
+pmpa x packed/*.pmpa -o restored/  # and back
+pmpa list packed/*.pmpa            # sizes and hashes
+```
+
+## How it was built
+
+Bottom-up, each layer with its tests:
 
 | Layer | Unit | Status |
 |---|---|---|
@@ -76,3 +106,8 @@ MIT; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 [wHome]: https://github.com/YadeWira/PMPA/wiki
 [wBench]: https://github.com/YadeWira/PMPA/wiki/Benchmarks
 [wHandles]: https://github.com/YadeWira/PMPA/wiki/What-PMPA-handles
+[wInstall]: https://github.com/YadeWira/PMPA/wiki/Installing
+[ciBadge]: https://github.com/YadeWira/PMPA/actions/workflows/ci.yml/badge.svg?branch=main
+[ciLink]: https://github.com/YadeWira/PMPA/actions/workflows/ci.yml
+[relBadge]: https://img.shields.io/github/v/release/YadeWira/PMPA
+[relLink]: https://github.com/YadeWira/PMPA/releases/latest
