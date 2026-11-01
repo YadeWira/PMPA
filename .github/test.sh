@@ -11,7 +11,7 @@
 set -eu
 FPC=${FPC:-fpc}
 OUT=${PMPA_OUT:-build/ci}
-SAMPLES="tests/mp1 tests/mp2 tests/mp3"
+SAMPLES="tests/mp1 tests/mp2 tests/mp3 tests/covers"
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
 if command -v sha256sum > /dev/null; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
 rm -rf "$OUT"; mkdir -p "$OUT/u" "$OUT/t" "$OUT/p" "$OUT/x"
@@ -24,8 +24,8 @@ case ${CC:-} in /*) PATH=$(dirname "$CC"):$PATH; export PATH ;; esac
 sh pas/build_c.sh "$OUT/c" || { echo "the C part did not build (CC=${CC:-cc})"; exit 1; }
 
 echo "== layer tests"
-for prog in test_blake3 test_arith test_mpeg test_l3 test_l12 test_codec test_format; do
-  $FPC -O2 -Fupas -Fipas -Fo"$OUT/c" -FU"$OUT/t" -FE"$OUT/t" "pas/tests/$prog.pas" > "$OUT/fpc.log" 2>&1 \
+for prog in test_blake3 test_arith test_mpeg test_l3 test_l12 test_id3 test_codec test_format; do
+  $FPC -O2 -Fupas -Fipas -Fuvendor/pja/pas -Fivendor/pja/pas -Fo"$OUT/c" -FU"$OUT/t" -FE"$OUT/t" "pas/tests/$prog.pas" > "$OUT/fpc.log" 2>&1 \
     || { cat "$OUT/fpc.log"; exit 1; }
 done
 "$OUT/t/test_blake3$EXE" pas/tests/kat.txt | tail -1
@@ -33,6 +33,7 @@ done
 "$OUT/t/test_mpeg$EXE" tests | tail -1
 "$OUT/t/test_l3$EXE" -q tests/mp3 tests/odd | tail -1
 "$OUT/t/test_l12$EXE" -q tests/mp1 tests/mp2 | tail -1
+"$OUT/t/test_id3$EXE" tests/covers | tail -1
 "$OUT/t/test_codec$EXE" $SAMPLES tests/odd > "$OUT/codec.txt" || { cat "$OUT/codec.txt"; exit 1; }
 tail -3 "$OUT/codec.txt"
 # the C and the Pascal write the same streams
@@ -43,17 +44,17 @@ echo "the C and the Pascal: the same streams"
 "$OUT/t/test_format$EXE" $SAMPLES | tail -1
 
 echo "== the command"
-$FPC -O3 -dPMPA_FAST -Fupas -Fipas -Fo"$OUT/c" -FU"$OUT/u" -o"$OUT/pmpa$EXE" pas/pmpacli.pas > "$OUT/fpc.log" 2>&1 \
+$FPC -O3 -dPMPA_FAST -dPJA_FAST -Fupas -Fipas -Fuvendor/pja/pas -Fivendor/pja/pas -Fo"$OUT/c" -FU"$OUT/u" -o"$OUT/pmpa$EXE" pas/pmpacli.pas > "$OUT/fpc.log" 2>&1 \
   || { cat "$OUT/fpc.log"; exit 1; }
 "$OUT/pmpa$EXE" --version
-"$OUT/pmpa$EXE" a -q --output-dir="$OUT/p" tests/mp1/* tests/mp2/* tests/mp3/*
+"$OUT/pmpa$EXE" a -q --output-dir="$OUT/p" tests/mp1/* tests/mp2/* tests/mp3/* tests/covers/*
 "$OUT/pmpa$EXE" x -q --output-dir="$OUT/x" "$OUT"/p/*.pmpa
 n=0
-for f in tests/mp1/* tests/mp2/* tests/mp3/*; do
+for f in tests/mp1/* tests/mp2/* tests/mp3/* tests/covers/*; do
   n=$((n + 1))
   cmp -s "$f" "$OUT/x/$(basename "$f")" || { echo "FAIL: $(basename "$f") does not come back"; exit 1; }
 done
-[ "$n" -ge 29 ] || { echo "FAIL: only $n samples"; exit 1; }
+[ "$n" -ge 41 ] || { echo "FAIL: only $n samples"; exit 1; }
 echo "$n samples back byte for byte"
 
 echo "== the .pmpa files"

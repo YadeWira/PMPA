@@ -1,7 +1,8 @@
 #!/bin/sh
-# The C part of PMPA (pmpal3c.c: stream version 6's model of Layer III's
-# values) as an object for FreePascal to link: pmpac.pas takes it with
-# {$L pmpal3c.o}, found through -Fo<dir>. As PJA's build_c.sh.
+# The C part of PMPA (pmpal3c.c: the models' hot loops) and of the vendored
+# PJA (vendor/pja: the album covers' JPEGs) as objects for FreePascal to
+# link: pmpac.pas takes pmpal3c.o with {$L pmpal3c.o}, PJA's pjav7.pas its
+# own, all found through -Fo<dir>. As PJA's build_c.sh.
 #
 #   pas/build_c.sh <out dir> [extra C flags]
 #
@@ -38,3 +39,14 @@ esac
 mkdir -p "$OUT"
 # shellcheck disable=SC2086
 $CC $FLAGS "$@" -c "$HERE/pmpal3c.c" -o "$OUT/pmpal3c.o"
+
+# and the vendored PJA's (pjav7c.o, pjasysc.o: the album covers' JPEGs), by
+# its own build_c.sh, with the same choice for 32-bit x86: with -march=i686
+# its SSE2 path is left out, and its SSE4.1 and AVX2 copies run only where
+# its cpuid check finds them
+ARCH=
+case "$CC $* $TARGET" in
+  *-m32*|*i686*|*i386*|*i586*) ARCH="-march=i686 -mtune=generic" ;;
+esac
+# shellcheck disable=SC2086
+sh "$HERE/../vendor/pja/pas/build_c.sh" "$OUT" $ARCH "$@"

@@ -17,6 +17,12 @@ says how they were made rather than promising the same bytes again.
     tests/odd   what real files carry around the frames: tags of every kind,
                 junk before, between and after, a frame cut short,
                 concatenated streams, bytes that are not MPEG at all
+    tests/covers  ID3v2 tags with pictures (album covers), JPEG and PNG
+                made by ffmpeg and cjpeg from ffmpeg's test patterns, in
+                every way a tag can hold them (v2.2 PIC, v2.3 and v2.4
+                APIC, unsynchronisation of the tag or of a frame, an
+                extended header, two pictures, a compressed frame, a JPEG
+                cut short)
 """
 import os, random, shutil, struct, subprocess, sys, tempfile
 
@@ -202,8 +208,104 @@ def lyrics3():
     return body + b'%06d' % len(body) + b'LYRICS200'
 
 
+# ---------------------------------------------------------------- covers
+
+def image(name, fmt, size, *extra):
+    """a picture of one of ffmpeg's test patterns"""
+    path = os.path.join(TMP, name)
+    run('ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i', f'{fmt}=s={size}', '-frames:v', '1', *extra, path)
+    return read(path)
+
+
+def progressive(jpeg_name):
+    """the same picture as a progressive JPEG (cjpeg, from a PPM)"""
+    ppm = os.path.join(TMP, jpeg_name + '.ppm')
+    out = os.path.join(TMP, jpeg_name + '.prog.jpg')
+    run('ffmpeg', '-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=400x400', '-frames:v', '1', ppm)
+    run('cjpeg', '-progressive', '-quality', '85', '-outfile', out, ppm)
+    return read(out)
+
+
+def unsync(b, every=False):
+    """ID3's unsynchronisation: a 0 after each FF that comes before a byte
+    of E0 or more, or a 0 (or after every FF)"""
+    out = bytearray()
+    for i, x in enumerate(b):
+        out.append(x)
+        if x == 0xFF and (every or (i + 1 < len(b) and (b[i + 1] >= 0xE0 or b[i + 1] == 0))):
+            out.append(0)
+    return bytes(out)
+
+
+def syncsafe(n):
+    return bytes([(n >> 21) & 127, (n >> 14) & 127, (n >> 7) & 127, n & 127])
+
+
+def apic(img, mime=b'image/jpeg', ptype=3, desc=b'cover', enc=0):
+    if enc == 1:
+        d = b'\xff\xfe' + desc.decode().encode('utf-16-le') + b'\0\0'
+    else:
+        d = desc + b'\0'
+    return bytes([enc]) + mime + b'\0' + bytes([ptype]) + d + img
+
+
+def frame23(fid, data, flags=0):
+    return fid + struct.pack('>IH', len(data), flags) + data
+
+
+def tag23(frames, flags=0, padding=64, ext=False, tag_unsync=None):
+    body = b''.join(frames)
+    if ext:
+        body = struct.pack('>I', 6) + b'\0\0' + struct.pack('>I', 0) + body
+    body += b'\0' * padding
+    if tag_unsync is not None:
+        body = unsync(body, tag_unsync == 'every')
+        flags |= 0x80
+    return b'ID3' + bytes([3, 0, flags | (0x40 if ext else 0)]) + syncsafe(len(body)) + body
+
+
+def tag24_frame_unsync(img):
+    """v2.4, the APIC frame unsynchronised, with its data length indicator"""
+    content = apic(img)
+    data = syncsafe(len(content)) + unsync(content)
+    fr = b'APIC' + syncsafe(len(data)) + struct.pack('>H', 0x0002 | 0x0001) + data
+    body = fr + frame24(b'TIT2', b'\x03synthetic') + b'\0' * 32
+    return b'ID3' + bytes([4, 0, 0]) + syncsafe(len(body)) + body
+
+
+def frame24(fid, data):
+    return fid + syncsafe(len(data)) + b'\0\0' + data
+
+
+def tag22(img, fmt=b'JPG'):
+    content = b'\0' + fmt + b'\x03' + b'cover\0' + img
+    fr = b'PIC' + len(content).to_bytes(3, 'big') + content
+    body = fr + b'TT2' + (10).to_bytes(3, 'big') + b'\0synthetic' + b'\0' * 16
+    return b'ID3' + bytes([2, 0, 0]) + syncsafe(len(body)) + body
+
+
+def covers(base):
+    jpg = image('cover.jpg', 'testsrc2', '500x500', '-q:v', '3')
+    jpg2 = image('back.jpg', 'smptebars', '300x300', '-q:v', '5')
+    prog = progressive('cover')
+    png = image('cover.png', 'testsrc2', '300x300')
+    title = frame23(b'TIT2', b'\x03synthetic')
+    write('covers', 'v23_jpeg.mp3', tag23([title, frame23(b'APIC', apic(jpg))]) + base)
+    write('covers', 'v23_jpg_mime_utf16.mp3', tag23([frame23(b'APIC', apic(jpg, b'image/jpg', 0, b'front', 1)), title]) + base)
+    write('covers', 'v23_progressive.mp3', tag23([frame23(b'APIC', apic(prog))]) + base)
+    write('covers', 'v23_two_pictures.mp3', tag23([frame23(b'APIC', apic(jpg, ptype=3)), title, frame23(b'APIC', apic(jpg2, ptype=4, desc=b'back'))]) + base)
+    write('covers', 'v23_extended_header.mp3', tag23([frame23(b'APIC', apic(jpg))], ext=True) + base)
+    write('covers', 'v23_tag_unsync.mp3', tag23([title, frame23(b'APIC', apic(jpg))], tag_unsync='canonical') + base)
+    write('covers', 'v23_tag_unsync_every_ff.mp3', tag23([frame23(b'APIC', apic(jpg2))], tag_unsync='every') + base)
+    write('covers', 'v24_frame_unsync.mp3', tag24_frame_unsync(jpg) + base)
+    write('covers', 'v22_pic.mp3', tag22(jpg) + base)
+    write('covers', 'v23_png.mp3', tag23([frame23(b'APIC', apic(png, b'image/png'))]) + base)
+    write('covers', 'v23_compressed_frame.mp3', tag23([frame23(b'APIC', apic(jpg), 0x0080)]) + base)
+    write('covers', 'v23_jpeg_cut_short.mp3', tag23([frame23(b'APIC', apic(jpg[:len(jpg) * 2 // 3]))]) + base)
+
+
 def main():
-    for sub in ('mp1', 'mp2', 'mp3', 'odd'):
+    for sub in ('mp1', 'mp2', 'mp3', 'odd', 'covers'):
         os.makedirs(os.path.join(OUT, sub), exist_ok=True)
 
     # Layer III
@@ -259,6 +361,8 @@ def main():
     write('odd', 'one_frame.mp3', base[:417])
     write('odd', 'not_mpeg.bin', bytes(rng.randrange(256) for _ in range(20000)))
     write('odd', 'empty_ish.mp3', b'\xff\xfb')
+
+    covers(base)
 
 
 if __name__ == '__main__':

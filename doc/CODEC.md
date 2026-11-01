@@ -402,3 +402,43 @@ compress 19.6 s against 19.4 to 20.0, extract 7.4 to 8.1 s against 5.7 s.
 A file of 3 or 4 bands keeps 3 or 4 of 8 threads busy, where all the
 files at once kept all 8. Doing better needs one pool of bands for every
 file, across the command, packing and the codec.
+
+## The stream, version 8: album covers through PJA (`pas/pmpaid3.pas`)
+
+An ID3v2 tag keeps a picture in an APIC frame (v2.3, v2.4) or a PIC frame
+(v2.2). `pmpaid3` finds those whose bytes are a JPEG (by their first
+bytes: the MIME type may say `image/jpg`, or `JPG` in v2.2), past an
+extended header, a frame's group byte and data length, with the
+unsynchronisation of the tag (v2.2, v2.3) or of the frame (v2.4) undone,
+and says where their raw bytes are in the file. Unsynchronisation is done
+again in one of two ways (a 0 after each FF before a byte of E0 or more,
+or a 0; or after each FF); a picture is kept only if one of them gives the
+file's very bytes. Compressed and encrypted frames are left alone.
+
+Version 8 codes an ID3v2 tag as its parts in order: how many pictures;
+for each, the bytes before it (as before), its raw length, the way, and
+the stream of the vendored PJA 0.6.2 (`vendor/pja`: `pjacodec.Compress`
+with its version 7 model, verified; its length, then its bytes at even
+odds, being compressed already); then the bytes after the last one. A
+picture PJA does not take, or does not make smaller, stays bytes, as
+everything else in the tag does (PNG and other pictures, text, padding).
+
+PNG covers wait for a release of PPA with a stream that no longer changes
+(its author's advice: until then they are bytes).
+
+What covers are, measured on 01/11/2026: the local corpus has none. Of
+300 MP3 files taken from archive.org (an original file of each of 300
+items of its netlabels, open-source audio, LibriVox and music
+collections, the first MB of each), 276 have an ID3v2 tag and 62 a
+picture: 56 JPEG (about 185 KB each), 6 PNG (about 390 KB), nothing else;
+14 say `image/jpg`; 4 tags are unsynchronised. `tests/covers` holds each
+way a tag can keep one, made by `scripts/mksamples.py`.
+
+| set | files | size | version 7 (0.1.0) | version 8 |
+|---|---|---|---|---|
+| the 296 archive.org files PMPA takes (their first MB) | 296 | 299.4 MB | 81.31% | 80.38% |
+| of them, the 53 whose JPEG cover PJA took | 53 | 54.8 MB | 84.82% | 79.84% |
+
+Only their first MB was taken, where a cover weighs more than in a whole
+file: in a 5 to 10 MB MP3, a 200 KB cover is 2 to 4% of it, and PJA takes
+about a quarter off it.

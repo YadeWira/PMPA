@@ -87,6 +87,8 @@ Bottom-up, each layer with its tests:
 | version 6: faster (contexts hashed once a value, verifying on a second thread) | | done |
 | the models' hot loops in C, Layer III's values and Layer I and II's samples (the same streams as the Pascal) | `pas/pmpal3c.c`, `pas/pmpac.pas` | done |
 | version 7: bands of 2 MiB coded and decoded at once on several threads | `pas/pmpacodec.pas` | done |
+| version 8: album covers (ID3v2 JPEG pictures) through the vendored PJA 0.6.2 | `pas/pmpaid3.pas`, `vendor/pja` | done |
+| PNG covers, through PPA once it has a release | | |
 
 ## Building and testing
 
@@ -95,8 +97,9 @@ Bottom-up, each layer with its tests:
 ```
 
 Needs [Free Pascal](https://www.freepascal.org) 3.2.2 and a C compiler
-(gcc or clang; `CC` picks it): `pas/build_c.sh <dir>` builds the C part,
-and `fpc -Fo<dir>` links it. The [wiki](https://github.com/YadeWira/PMPA/wiki/Building)
+(gcc or clang; `CC` picks it): `pas/build_c.sh <dir>` builds the C part
+(PMPA's and the vendored PJA's, `vendor/pja`, which recompresses album
+covers), and `fpc -Fupas -Fuvendor/pja/pas -Fo<dir>` links it. The [wiki](https://github.com/YadeWira/PMPA/wiki/Building)
 has the details.
 
 ## License

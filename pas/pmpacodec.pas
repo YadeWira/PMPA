@@ -51,7 +51,7 @@ interface
 uses SysUtils, pmpampeg, pmpal3, pmpahuff, pmpal12;
 
 const
-  STREAM_VERSION = 7;
+  STREAM_VERSION = 8;
   PMPA_VERSION = '0.1.0';
 
 type
@@ -128,22 +128,23 @@ function DecodeStatusName(st: TDecodeStatus): string;
 
 {$ifdef PMPA_COSTS}
 const
-  COST_NAMES: array[0..32] of string = ('structure', 'other bytes', 'side info', 'filler',
+  COST_NAMES: array[0..35] of string = ('structure', 'other bytes', 'side info', 'filler',
     'scalefactors', 'raw granules', 'zero flags', 'magnitudes', 'signs', 'tails',
     ' si mdb', ' si private', ' si scfsi', ' si part23', ' si bigvalues', ' si gain',
     ' si sfcompress', ' si winswitch', ' si blocktype', ' si mixed', ' si table0',
     ' si table1', ' si table2', ' si subgain', ' si region0', ' si region1', ' si preflag',
-    ' si sfscale', ' si count1tab', ' si crc', ' quads', ' tail length', 'L12 allocation');
+    ' si sfscale', ' si count1tab', ' si crc', ' quads', ' tail length', 'L12 allocation',
+    ' pictures', ' picture modes', 'covers (PJA)');
 var
   { what encoding cost, in bits, by part (the tools' build only) }
-  Costs: array[0..32] of Double;
+  Costs: array[0..35] of Double;
   { the tools' build: Layer III value contexts to leave out, a bit each }
   DropInput: Integer = 0;
 {$endif}
 
 implementation
 
-uses {$ifdef PMPA_COSTS} Math, {$endif} pmpaarith, pmpamodel, pmpalimits;
+uses {$ifdef PMPA_COSTS} Math, {$endif} pmpaarith, pmpamodel, pmpalimits, pmpaid3, pjacodec, pjav7;
 
 const
   LIMIT_STRUCT = 127;   { the structure (kinds, headers, lengths) is steady }
@@ -155,8 +156,8 @@ const
   F_MDB = 0; F_PRIV = 1; F_SCFSI = 2; F_PART23 = 3; F_BIGV = 4; F_GAIN = 5;
   F_SFC = 6; F_WS = 7; F_BT = 8; F_MIX = 9; F_TAB = 10; { 10, 11, 12 }
   F_SUBG = 13; F_R0 = 14; F_R1 = 15; F_PRE = 16; F_SFS = 17; F_C1 = 18; F_CRC = 19;
-  F_QUADS = 20; F_TAIL = 21; F_ODD = 22;
-  N_FIELDS = 23;
+  F_QUADS = 20; F_TAIL = 21; F_ODD = 22; F_PIC = 23; F_PICMODE = 24;
+  N_FIELDS = 25;
   { the values' contexts: how many of each }
   N_CAP = 7;      { what the table allows: 1, 2, 3, 5, 7, 15, 15 and linbits }
   N_NB = 8;       { the two values before }
@@ -1675,6 +1676,91 @@ begin
   if Result > maxv then Result := -1;
 end;
 
+{ version 8: an ID3v2 tag (len bytes at pos), its JPEG pictures through
+  PJA: how many; for each, the bytes before it, its raw length, how its
+  bytes are in the file (pmpaid3's MODE_*) and PJA's stream (its length,
+  then its bytes at even odds: they are compressed already); then the
+  bytes after the last. A picture PJA does not make smaller stays bytes.
+  False if the stream is damaged. }
+function CodeTag(var m: TModel; var d: TBytes; pos, len: Int64): Boolean;
+var
+  pics: TPictures; streams: array of TBytes; keep: array of Integer;
+  n, k, i, mode, j: Integer; cur, stop, gap, rawLen, slen: Int64; st, jpeg, raw: TBytes;
+  r: TCodecResult;
+begin
+  Result := False;
+  stop := pos + len;
+  pics := nil; streams := nil; keep := nil;
+  n := 0;
+  if not m.decoding then
+  begin
+    pics := FindPictures(d, pos, len);
+    SetLength(streams, Length(pics)); SetLength(keep, Length(pics));
+    for k := 0 to High(pics) do
+    begin
+      try
+        r := pjacodec.Compress(pics[k].jpeg, st, True, 1, False, True, True);
+      except
+        r.err := ceNoRoundTrip;
+      end;
+      if r.Ok and (Length(st) < pics[k].rawLen) then
+      begin
+        keep[n] := k; streams[n] := st;
+        Inc(n);
+      end;
+    end;
+  end;
+  Part(33);
+  n := CodeField(m, n, 7, F_PIC, 0);
+  cur := pos;
+  for i := 0 to n - 1 do
+  begin
+    gap := 0; rawLen := 0; mode := 0; slen := 0;
+    if not m.decoding then
+    begin
+      gap := pics[keep[i]].rawStart - cur; rawLen := pics[keep[i]].rawLen;
+      mode := pics[keep[i]].mode; slen := Length(streams[i]);
+    end;
+    Part(33);
+    gap := CodeLength(m, gap + 1) - 1;
+    if (gap < 0) or (gap > stop - cur) then Exit;
+    Part(1);
+    CodeBytes(m, d, cur, gap, 1);
+    Inc(cur, gap);
+    Part(33);
+    rawLen := CodeLength(m, rawLen);
+    if (rawLen < 1) or (rawLen > stop - cur) then Exit;
+    Part(34);
+    mode := CodeField(m, mode, 2, F_PICMODE, 0);
+    if mode > MODE_UNSYNC_ALL then Exit;
+    Part(33);
+    slen := CodeLength(m, slen);
+    if (slen < 1) or (slen > rawLen) then Exit;
+    Part(35);
+    if m.decoding then
+    begin
+      st := nil;
+      SetLength(st, slen);
+      for j := 0 to slen - 1 do st[j] := Byte(m.dec.Direct(8));
+      try
+        r := pjacodec.Decompress(st, jpeg, rawLen, 1, 0);
+      except
+        Exit;
+      end;
+      if not r.Ok then Exit;
+      raw := Unsync(jpeg, mode);
+      if Length(raw) <> rawLen then Exit;
+      Move(raw[0], d[cur], rawLen);
+    end
+    else
+      for j := 0 to slen - 1 do m.enc.Direct(streams[i][j], 8);
+    Inc(cur, rawLen);
+  end;
+  Part(1);
+  CodeBytes(m, d, cur, stop - cur, 1);
+  Result := True;
+end;
+
 { Every segment from byte startPos to byte total, the same code both ways:
   the encoder takes them from scan (from its segment firstSeg), the decoder
   from the stream. ver: the stream's version. False if the stream is
@@ -1753,7 +1839,11 @@ begin
       len := CodeLength(m, len);
       if (len < 1) or (len > total - pos) then Exit;
       Part(1);
-      CodeBytes(m, d, pos, len, 1);
+      if (ver >= 8) and (TSegmentKind(kind) = skID3v2) then
+      begin
+        if not CodeTag(m, d, pos, len) then Exit;
+      end
+      else CodeBytes(m, d, pos, len, 1);
     end;
     Inc(pos, len);
     Inc(i);

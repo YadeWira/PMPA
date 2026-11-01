@@ -16,3 +16,11 @@ pas/collisions.py come from PJA
 
 pas/tests/kat.txt holds test vectors of the official BLAKE3 implementation
 (https://github.com/BLAKE3-team/BLAKE3), CC0 / Apache-2.0.
+
+Vendored
+--------
+
+vendor/pja is PJA 0.6.2 (https://github.com/YadeWira/PJA, tag v0.6.2),
+copied unmodified from its release's vendor tarball (vendor/pja/VERSION.txt
+says how): MIT (vendor/pja/LICENSE), its NOTICE in vendor/pja/NOTICE.
+PMPA uses it for the JPEG pictures of ID3v2 tags.
