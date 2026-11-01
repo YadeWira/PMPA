@@ -50,7 +50,7 @@ begin
   Check(Len($FFE31804) = 72, 'MPEG-2.5 L3 8k 8 kHz: 72 B');
   Check(Len($FFF71804) = 96, 'MPEG-2 L1 32k 16 kHz: 96 B');
   DecodeHeader($FFFB9064, hd);
-  Check((hd.version = mvMpeg1) and (hd.layer = 3) and not hd.hasCrc and (hd.bitrate = 128)
+  Check((hd.ver = mvMpeg1) and (hd.layer = 3) and not hd.hasCrc and (hd.bitrate = 128)
         and (hd.sampleRate = 44100) and (hd.channels = 2) and (hd.mode = 1)
         and (hd.samplesPerFrame = 1152) and (hd.sideInfoBytes = 32), 'every field of FFFB9064');
   DecodeHeader($FFFA90C4, hd);

@@ -38,7 +38,7 @@ begin
       begin
         Write('  ', S.segments[j].offset:10, ' ', S.segments[j].length:9, ' ', SegmentKindName(S.segments[j].kind));
         if (S.segments[j].kind = skFrame) and DecodeHeader(HeaderAt(data, S.segments[j].offset), hd) then
-          Write(' ', VersionName(hd.version), ' L', hd.layer, ' ', hd.bitrate, 'k ', hd.sampleRate, ' Hz mode ', hd.mode,
+          Write(' ', VersionName(hd.ver), ' L', hd.layer, ' ', hd.bitrate, 'k ', hd.sampleRate, ' Hz mode ', hd.mode,
             ' crc ', hd.hasCrc);
         Writeln;
       end;

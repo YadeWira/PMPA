@@ -20,15 +20,24 @@ The original comes back **byte for byte**, and nothing is written unless it
 verified: `a` decompresses its own result and compares it with the input
 first, and `x` checks the size and the BLAKE3 hash the `.pmpa` carries.
 
-**Status: in development.** Built bottom-up, each layer with its tests:
+A file with no MPEG audio frame is refused: PMPA is not a general
+compressor. The command is described in [doc/CLI.md](doc/CLI.md), the file
+in [doc/FORMAT.md](doc/FORMAT.md), the codec in [doc/CODEC.md](doc/CODEC.md).
+
+**Status: in development.** The container and the command work end to end,
+but the codec is still a scaffold that knows the frames' structure and not
+what is inside them: on the 24 files with MPEG audio of a local sample
+corpus (24.8 MB), the `.pmpa` files are 96.74% of the originals (measured
+01/11/2026). Built bottom-up, each layer with its tests:
 
 | Layer | Unit | Status |
 |---|---|---|
 | hash (BLAKE3-128) | `pas/pmpablake3.pas` | done, from PJA |
 | binary arithmetic coder | `pas/pmpaarith.pas` | done, from PJA |
 | MPEG audio parser: frames (Layer I, II, III; MPEG-1, 2, 2.5; free format) and tags (ID3v2, ID3v1, APE, Lyrics3) | `pas/pmpampeg.pas` | done |
-| the stream's model and codec | | |
-| the `.pmpa` container and the `pmpa` command | | |
+| the codec stream, version 1: the segments, frame headers predicted, bytes in order 0/1 (a scaffold) | `pas/pmpacodec.pas` | done |
+| the `.pmpa` container and the `pmpa` command | `pas/pmpaformat.pas`, `pas/pmpapack.pas`, `pas/pmpafs.pas`, `pas/pmpacli.pas` | done, from PJA by way of PRA |
+| models of each layer's frames (side information, scalefactors, Huffman data) | | next |
 
 ## Building and testing
 

@@ -39,7 +39,7 @@ type
 
   TMpegHeader = record
     raw: UInt32;
-    version: TMpegVersion;
+    ver: TMpegVersion;
     layer: Integer;            { 1, 2 or 3 }
     hasCrc: Boolean;           { a 16-bit CRC follows the header }
     bitrateIndex: Integer;     { 0 = free format }
@@ -149,9 +149,9 @@ begin
   if (h shr 21) <> $7FF then Exit;
   v := (h shr 19) and 3;
   case v of
-    0: hd.version := mvMpeg25;
-    2: hd.version := mvMpeg2;
-    3: hd.version := mvMpeg1;
+    0: hd.ver := mvMpeg25;
+    2: hd.ver := mvMpeg2;
+    3: hd.ver := mvMpeg1;
   else Exit;                                       { 1 is reserved }
   end;
   case (h shr 17) and 3 of
@@ -161,7 +161,7 @@ begin
   else Exit;                                       { 0 is reserved }
   end;
   { MPEG-2.5 is Layer III only }
-  if (hd.version = mvMpeg25) and (hd.layer <> 3) then Exit;
+  if (hd.ver = mvMpeg25) and (hd.layer <> 3) then Exit;
   hd.hasCrc := ((h shr 16) and 1) = 0;
   hd.bitrateIndex := (h shr 12) and 15;
   if hd.bitrateIndex = 15 then Exit;
@@ -177,11 +177,11 @@ begin
   if hd.emphasis = 2 then Exit;                    { reserved }
   hd.raw := h;
 
-  if hd.version = mvMpeg1 then row := hd.layer - 1
+  if hd.ver = mvMpeg1 then row := hd.layer - 1
   else if hd.layer = 1 then row := 3
   else row := 4;
   hd.bitrate := BITRATES[row, hd.bitrateIndex];
-  hd.sampleRate := RATES[hd.version, hd.rateIndex];
+  hd.sampleRate := RATES[hd.ver, hd.rateIndex];
   if hd.mode = 3 then hd.channels := 1 else hd.channels := 2;
 
   case hd.layer of
@@ -189,7 +189,7 @@ begin
     2: begin hd.samplesPerFrame := 1152; hd.slotBytes := 1; end;
   else
     hd.slotBytes := 1;
-    if hd.version = mvMpeg1 then
+    if hd.ver = mvMpeg1 then
     begin
       hd.samplesPerFrame := 1152;
       if hd.channels = 1 then hd.sideInfoBytes := 17 else hd.sideInfoBytes := 32;
@@ -226,7 +226,7 @@ end;
 
 function SameStream(const a, b: TMpegHeader): Boolean;
 begin
-  Result := (a.version = b.version) and (a.layer = b.layer)
+  Result := (a.ver = b.ver) and (a.layer = b.layer)
             and (a.rateIndex = b.rateIndex)
             and ((a.bitrateIndex = 0) = (b.bitrateIndex = 0));
 end;

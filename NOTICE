@@ -6,7 +6,10 @@ Code shared with PJA and PRA
 ----------------------------
 
 pas/pmpaarith.pas (binary arithmetic coder), pas/pmpablake3.pas (BLAKE3),
-pas/pmpa.inc and pas/collisions.py come from PJA
+pas/pmpaformat.pas (the container), pas/pmpafs.pas (verified writing),
+pas/pmpapack.pas, pas/pmpacpu.pas, pas/pmpacli.pas (the command, adapted),
+their tests (test_format, test_pmpafs, cli.sh, adapted), pas/pmpa.inc and
+pas/collisions.py come from PJA
 (https://github.com/YadeWira/PJA), by way of PRA
 (https://github.com/YadeWira/PRA): same author, MIT License.
 
