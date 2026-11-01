@@ -26,7 +26,7 @@ first, and `x` checks the size and the BLAKE3 hash the `.pmpa` carries.
 |---|---|---|
 | hash (BLAKE3-128) | `pas/pmpablake3.pas` | done, from PJA |
 | binary arithmetic coder | `pas/pmpaarith.pas` | done, from PJA |
-| MPEG audio frame parser (Layer I, II, III; MPEG-1, 2, 2.5) | | next |
+| MPEG audio parser: frames (Layer I, II, III; MPEG-1, 2, 2.5; free format) and tags (ID3v2, ID3v1, APE, Lyrics3) | `pas/pmpampeg.pas` | done |
 | the stream's model and codec | | |
 | the `.pmpa` container and the `pmpa` command | | |
 

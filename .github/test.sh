@@ -12,9 +12,10 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
 rm -rf "$OUT"; mkdir -p "$OUT/t"
 
 echo "== layer tests"
-for prog in test_blake3 test_arith; do
+for prog in test_blake3 test_arith test_mpeg; do
   $FPC -O2 -Fupas -Fipas -FU"$OUT/t" -FE"$OUT/t" "pas/tests/$prog.pas" > "$OUT/fpc.log" 2>&1 \
     || { cat "$OUT/fpc.log"; exit 1; }
 done
 "$OUT/t/test_blake3$EXE" pas/tests/kat.txt | tail -1
 "$OUT/t/test_arith$EXE" | tail -1
+"$OUT/t/test_mpeg$EXE" tests | tail -1
