@@ -1,0 +1,7 @@
+*.a
+build/
+*.exe
+hash.txt
+*.o
+*.ppu
+__pycache__/
