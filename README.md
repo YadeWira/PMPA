@@ -29,8 +29,8 @@ in [doc/FORMAT.md](doc/FORMAT.md), the codec in [doc/CODEC.md](doc/CODEC.md).
 and every layer is modelled: Layer III files come out at 84.07% of their
 size, where packMP3 3.0f makes 84.36%, and Layer II at 72.13%, where
 packMP2 0.8 makes 76.95% at best (measured 01/11/2026, [how][wBench];
-[doc/CODEC.md](doc/CODEC.md)). It is slow for now: about 0.65 MB/s to
-compress a file on 2 threads and to extract it on one, where packMP3
+[doc/CODEC.md](doc/CODEC.md)). It is slow for now: about 1.1 MB/s to
+compress a file on 2 threads and 1.4 MB/s to extract it, where packMP3
 does about 3 MB/s. Built bottom-up, each layer with its tests:
 
 | Layer | Unit | Status |
@@ -45,7 +45,8 @@ does about 3 MB/s. Built bottom-up, each layer with its tests:
 | version 4: Layer III mixed (values, signs, scalefactors), part2_3_length derived | `pas/pmpamodel.pas` | done |
 | version 5: Layer I and II (allocation, scale factors, samples) | `pas/pmpal12.pas` | done |
 | version 6: faster (contexts hashed once a value, verifying on a second thread) | | done |
-| the model's hot loop in C | | next |
+| Layer III's values in C (the same streams as the Pascal) | `pas/pmpal3c.c`, `pas/pmpac.pas` | done |
+| Layer I and II's samples in C | | next |
 
 ## Building and testing
 
@@ -53,7 +54,10 @@ does about 3 MB/s. Built bottom-up, each layer with its tests:
 ./run_tests.sh           # every layer's tests, with range and overflow checks on
 ```
 
-Needs [Free Pascal](https://www.freepascal.org) 3.2.2.
+Needs [Free Pascal](https://www.freepascal.org) 3.2.2 and a C compiler
+(gcc or clang; `CC` picks it): `pas/build_c.sh <dir>` builds the C part,
+and `fpc -Fo<dir>` links it. The [wiki](https://github.com/YadeWira/PMPA/wiki/Building)
+has the details.
 
 ## License
 

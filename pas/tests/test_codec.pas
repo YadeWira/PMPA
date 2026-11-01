@@ -7,7 +7,7 @@
     test_codec <dir>... }
 program test_codec;
 {$I ../pmpa.inc}
-uses {$ifdef UNIX} cthreads, {$endif} SysUtils, Classes, pmpablake3, pmpampeg, pmpal3, pmpal12, pmpacodec;
+uses {$ifdef UNIX} cthreads, {$endif} SysUtils, Classes, pmpablake3, pmpampeg, pmpal3, pmpal12, pmpacodec, pmpac;
 
 var cells, failures: Integer;
 

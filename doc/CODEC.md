@@ -297,3 +297,27 @@ And with `scripts/measure.sh`, 8 threads, one file a thread:
 Most of the time is still the mixing (counters, mixer, APM) and the
 contexts made for each value, in Pascal: packMP3 does the 6.5 MB file in
 2 s. The family's way is the model's hot loop in C, as PJA's.
+
+## Layer III's values in C (`pas/pmpal3c.c`)
+
+The hot loop of stream version 6's Layer III model (each granule's values:
+their contexts, the mixing, the APM, the arithmetic coding) is also written
+in C, the family's way (PJA's version 7 model). It writes the same streams
+as the Pascal: `run_tests.sh` (gcc) and every CI platform (clang, MinGW-w64
+gcc on Windows x86) compare the two (`PMPA_NOC=1` takes the Pascal path in
+a program that has the C). The C takes no memory and calls no library:
+`pas/pmpac.pas` hands it the tables once, `pmpacodec` the counters, mixer,
+APM and coder's state for each granule, and two callbacks carry bytes in
+and out of the coder; the structs' layout is checked against the Pascal
+records before the C is used.
+
+Measured on 01/11/2026 (clang 19, the same machine and load as before):
+
+| | Pascal | C |
+|---|---|---|
+| a 6.5 MB MP3, compress, 1 thread | 18.1 s | 12.1 s |
+| the same, 2 threads | 10.3 s | 6.1 s |
+| the same, extract | 9.8 s | 4.7 s |
+| the corpus's 24 MPEG files, 8 threads, compress / extract | 31.3 s / 10.5 s | 22.5 s / 6.3 s |
+
+Layer I and II's samples are still Pascal.

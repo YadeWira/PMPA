@@ -16,9 +16,16 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXE=.exe ;; *) EXE= ;; esac
 if command -v sha256sum > /dev/null; then SHA="sha256sum"; else SHA="shasum -a 256"; fi
 rm -rf "$OUT"; mkdir -p "$OUT/u" "$OUT/t" "$OUT/p" "$OUT/x"
 
+echo "== the C part"
+# CC: the platform's C compiler. A compiler given by its full path (MSYS2's
+# MinGW-w64 gcc on Windows) needs its own folder on PATH for its DLLs and
+# its cc1/as; without it, it fails without a word (PJA found it).
+case ${CC:-} in /*) PATH=$(dirname "$CC"):$PATH; export PATH ;; esac
+sh pas/build_c.sh "$OUT/c" || { echo "the C part did not build (CC=${CC:-cc})"; exit 1; }
+
 echo "== layer tests"
 for prog in test_blake3 test_arith test_mpeg test_l3 test_l12 test_codec test_format; do
-  $FPC -O2 -Fupas -Fipas -FU"$OUT/t" -FE"$OUT/t" "pas/tests/$prog.pas" > "$OUT/fpc.log" 2>&1 \
+  $FPC -O2 -Fupas -Fipas -Fo"$OUT/c" -FU"$OUT/t" -FE"$OUT/t" "pas/tests/$prog.pas" > "$OUT/fpc.log" 2>&1 \
     || { cat "$OUT/fpc.log"; exit 1; }
 done
 "$OUT/t/test_blake3$EXE" pas/tests/kat.txt | tail -1
@@ -26,11 +33,17 @@ done
 "$OUT/t/test_mpeg$EXE" tests | tail -1
 "$OUT/t/test_l3$EXE" -q tests/mp3 tests/odd | tail -1
 "$OUT/t/test_l12$EXE" -q tests/mp1 tests/mp2 | tail -1
-"$OUT/t/test_codec$EXE" $SAMPLES tests/odd | tail -3
+"$OUT/t/test_codec$EXE" $SAMPLES tests/odd > "$OUT/codec.txt" || { cat "$OUT/codec.txt"; exit 1; }
+tail -3 "$OUT/codec.txt"
+# the C and the Pascal write the same streams
+PMPA_NOC=1 "$OUT/t/test_codec$EXE" $SAMPLES tests/odd > "$OUT/codec_noc.txt" || { cat "$OUT/codec_noc.txt"; exit 1; }
+a=$(grep '^streams ' "$OUT/codec.txt"); b=$(grep '^streams ' "$OUT/codec_noc.txt")
+[ -n "$a" ] && [ "$a" = "$b" ] || { echo "FAIL: C $a, Pascal $b"; exit 1; }
+echo "the C and the Pascal: the same streams"
 "$OUT/t/test_format$EXE" $SAMPLES | tail -1
 
 echo "== the command"
-$FPC -O3 -dPMPA_FAST -Fupas -Fipas -FU"$OUT/u" -o"$OUT/pmpa$EXE" pas/pmpacli.pas > "$OUT/fpc.log" 2>&1 \
+$FPC -O3 -dPMPA_FAST -Fupas -Fipas -Fo"$OUT/c" -FU"$OUT/u" -o"$OUT/pmpa$EXE" pas/pmpacli.pas > "$OUT/fpc.log" 2>&1 \
   || { cat "$OUT/fpc.log"; exit 1; }
 "$OUT/pmpa$EXE" --version
 "$OUT/pmpa$EXE" a -q --output-dir="$OUT/p" tests/mp1/* tests/mp2/* tests/mp3/*

@@ -67,6 +67,40 @@ function EncodeFile(const d: TBytes; out s: TBytes; threads: Integer = 1): TEnco
 { The file of s, at most maxOut bytes. }
 function DecodeFile(const s: TBytes; maxOut: Int64; out d: TBytes; threads: Integer = 1): TDecodeStatus;
 function EncodeStatusName(st: TEncodeStatus): string;
+type
+  { pmpal3c.c's structs (pmpac.pas installs the C, after checking that these
+    are laid out as its own) }
+  TEncC = record
+    x1, x2: Cardinal;
+    ctx: Pointer;                     { the TArithEncoder }
+    n: SizeInt;
+    buf: array[0..4095] of Byte;
+  end;
+  TDecC = record
+    x1, x2, x: Cardinal;
+    d: PByte;
+    len, p: SizeInt;
+    live: Pointer;
+  end;
+  TValuesC = record
+    v, pv, ov, steps, prevStep: PLongInt;
+    cap, cls, lin: PShortInt;
+    bigEnd, endAt, dg: LongInt;
+    vt: Pointer; vtMask: Cardinal;
+    w: PLongInt; inputs, rate: LongInt;
+    apm: PLongInt; apmRate: LongInt;
+    sign4, linLen, linLow: Pointer;
+    decoding: LongInt;
+    enc: ^TEncC;
+    dec: ^TDecC;
+  end;
+  TValuesFn = function(var s: TValuesC): LongInt; cdecl;
+
+var
+  { stream version 6's Layer III values in C (pmpac.pas sets it); nil: in
+    Pascal. The streams are the same either way. }
+  ValuesC: TValuesFn = nil;
+
 { for the tests: the stream of d in an earlier version (1 to STREAM_VERSION),
   not verified; nil if d has no MPEG audio frame }
 function EncodeAs(const d: TBytes; ver: Integer): TBytes;
@@ -674,6 +708,88 @@ begin
   for j := 0 to High(hs) do CounterUpdate(cp[j]^, Result, V_LIMIT);
 end;
 
+{ n bytes of the encoder's output, as TArithEncoder.Encode writes them }
+procedure PutEncoded(var e: TArithEncoder; b: PByte; n: SizeInt);
+var i: SizeInt;
+begin
+  if e.live <> nil then
+    for i := 0 to n - 1 do e.live.Put(b[i])
+  else
+  begin
+    if e.n + n > Length(e.d) then SetLength(e.d, 2 * Length(e.d) + n + 4096);
+    Move(b^, e.d[e.n], n);
+  end;
+  Inc(e.n, n);
+end;
+
+{ version 6's values through pmpal3c.c: the same as CodeValues4, which
+  prepares what C needs and keeps what comes after }
+function CodeValuesC(var m: TModel; var v: TGranuleValues; const gi: TGranuleInfo;
+  const hd: TMpegHeader; quads, c: Integer; const steps: array of Integer): Boolean;
+var
+  r1, r2, i, t, cap: Integer; capA, clsA, linA: array[0..575] of ShortInt;
+  a: TValuesC; e: TEncC; dc: TDecC; ok: LongInt;
+begin
+  Result := False;
+  Regions(gi, hd, r1, r2);
+  for i := 0 to 575 do
+  begin
+    capA[i] := 1; clsA[i] := 7; linA[i] := 0;      { count1 }
+    if i < 2 * gi.bigValues then
+    begin
+      if i < r1 then t := gi.table[0]
+      else if i < r2 then t := gi.table[1]
+      else t := gi.table[2];
+      if HUFF_OFFSET[t] = -2 then Exit;
+      if HUFF_OFFSET[t] = -1 then clsA[i] := -1
+      else if LINBITS[t] > 0 then begin capA[i] := 15; clsA[i] := 6; linA[i] := LINBITS[t]; end
+      else
+      begin
+        cap := HUFF_SIZE[t] - 1;
+        capA[i] := cap;
+        case cap of 1: clsA[i] := 0; 2: clsA[i] := 1; 3: clsA[i] := 2; 5: clsA[i] := 3; 7: clsA[i] := 4; else clsA[i] := 5; end;
+      end;
+    end;
+  end;
+  a := Default(TValuesC);
+  a.v := @v[0]; a.pv := @m.prevVals[c][0];
+  if c = 1 then a.ov := @m.curVals[0][0] else a.ov := nil;
+  a.steps := @steps[0]; a.prevStep := @m.prevStep[c, 0];
+  a.cap := @capA[0]; a.cls := @clsA[0]; a.lin := @linA[0];
+  a.bigEnd := 2 * gi.bigValues; a.endAt := 2 * gi.bigValues + 4 * quads;
+  a.dg := gi.globalGain - m.lastGain[c];
+  if a.dg < -4 then a.dg := -4 else if a.dg > 4 then a.dg := 4;
+  Inc(a.dg, 4);
+  a.vt := @m.vt.c[0]; a.vtMask := Cardinal(m.vt.mask);
+  a.w := @m.vmix.w[0]; a.inputs := m.vmix.inputs; a.rate := m.vmix.rate;
+  a.apm := @m.vapm.t[0]; a.apmRate := m.vapm.rate;
+  a.sign4 := @m.sign4[0, 0, 0]; a.linLen := @m.linLen[1]; a.linLow := @m.linLow[0];
+  a.decoding := Ord(m.decoding);
+  if m.decoding then
+  begin
+    dc.x1 := m.dec.x1; dc.x2 := m.dec.x2; dc.x := m.dec.x;
+    if Length(m.dec.d) > 0 then dc.d := @m.dec.d[0] else dc.d := nil;
+    dc.len := Length(m.dec.d); dc.p := m.dec.p; dc.live := Pointer(m.dec.live);
+    a.dec := @dc;
+    ok := ValuesC(a);
+    m.dec.x1 := dc.x1; m.dec.x2 := dc.x2; m.dec.x := dc.x; m.dec.p := dc.p;
+  end
+  else
+  begin
+    e.x1 := m.enc.x1; e.x2 := m.enc.x2; e.ctx := @m.enc; e.n := 0;
+    a.enc := @e;
+    ok := ValuesC(a);
+    m.enc.x1 := e.x1; m.enc.x2 := e.x2;
+    if e.n > 0 then PutEncoded(m.enc, @e.buf[0], e.n);
+  end;
+  if ok = 0 then Exit;
+  m.prevVals[c] := v;
+  m.curVals[c] := v;
+  m.lastGain[c] := gi.globalGain;
+  for i := 0 to 575 do m.prevStep[c, i] := steps[i];
+  Result := True;
+end;
+
 { version 4's values: each decision (zero or not, greater than k) mixes six
   contexts: the two values before; the same value's neighbourhood in the
   granule before; the position; the other channel's value in this
@@ -746,6 +862,10 @@ begin
     if (gi.winSwitch = 1) and (gi.blockType = 2) then Dec(step, 8 * gi.subGain[win[i]]);
     steps[i] := step;
   end;
+  {$ifndef PMPA_COSTS}
+  if (m.ver >= 6) and Assigned(ValuesC) then
+    Exit(CodeValuesC(m, v, gi, hd, quads, c, steps));
+  {$endif}
   for i := 0 to 575 do
   begin
     if i >= 2 * gi.bigValues + 4 * quads then begin v[i] := 0; Continue; end;
@@ -858,6 +978,8 @@ begin
   for i := 0 to 575 do m.prevStep[c, i] := steps[i];
   Result := True;
 end;
+
+
 
 { one scalefactor of `width` bits, most significant first: each bit mixes
   its place, the same place in the last granule of this kind and channel

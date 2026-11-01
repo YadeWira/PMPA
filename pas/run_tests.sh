@@ -15,9 +15,12 @@ mkdir -p "$OUT"
 echo "== source guards"
 python3 pas/collisions.py pas
 
+echo "== the C part"
+sh pas/build_c.sh "$OUT/c" > "$OUT/cc.log" 2>&1 || { cat "$OUT/cc.log"; exit 1; }
+
 echo "== build"
 for prog in test_blake3 test_arith test_mpeg test_l3 test_l12 test_codec test_format test_pmpafs; do
-  $FPC -O2 -Fupas -Fipas -FU"$OUT" -FE"$OUT" "pas/tests/$prog.pas" > "$OUT/fpc.log" 2>&1 \
+  $FPC -O2 -Fupas -Fipas -Fo"$OUT/c" -FU"$OUT" -FE"$OUT" "pas/tests/$prog.pas" > "$OUT/fpc.log" 2>&1 \
     || { cat "$OUT/fpc.log"; exit 1; }
 done
 
@@ -35,13 +38,13 @@ rm -rf "$OUT/tmp_fs"; mkdir -p "$OUT/tmp_fs"; "$OUT/test_pmpafs" "$(realpath "$O
 
 echo "== the command"
 mkdir -p "$OUT/cli"
-$FPC -O3 -dPMPA_FAST -Fupas -Fipas -FU"$OUT/cli" -o"$OUT/pmpa" pas/pmpacli.pas > "$OUT/fpc.log" 2>&1 \
+$FPC -O3 -dPMPA_FAST -Fupas -Fipas -Fo"$OUT/c" -FU"$OUT/cli" -o"$OUT/pmpa" pas/pmpacli.pas > "$OUT/fpc.log" 2>&1 \
   || { cat "$OUT/fpc.log"; exit 1; }
 pas/tests/cli.sh "$OUT/pmpa" "$OUT/tmp_cli" $SAMPLES | tail -1
 
 echo "== the fast build makes the same streams"
 mkdir -p "$OUT/fast"
-$FPC -O3 -dPMPA_FAST -Fupas -Fipas -FU"$OUT/fast" -FE"$OUT/fast" pas/tests/test_codec.pas > "$OUT/fpc.log" 2>&1 \
+$FPC -O3 -dPMPA_FAST -Fupas -Fipas -Fo"$OUT/c" -FU"$OUT/fast" -FE"$OUT/fast" pas/tests/test_codec.pas > "$OUT/fpc.log" 2>&1 \
   || { cat "$OUT/fpc.log"; exit 1; }
 "$OUT/fast/test_codec" $SAMPLES tests/odd > "$OUT/codec_fast.txt" || { cat "$OUT/codec_fast.txt"; exit 1; }
 a=$(grep '^streams ' "$OUT/codec.txt"); b=$(grep '^streams ' "$OUT/codec_fast.txt")
@@ -51,5 +54,10 @@ echo "== the assembly makes the same streams as the Pascal (PMPA_NOASM=1)"
 PMPA_NOASM=1 "$OUT/fast/test_codec" $SAMPLES tests/odd > "$OUT/codec_noasm.txt" || { cat "$OUT/codec_noasm.txt"; exit 1; }
 c=$(grep '^streams ' "$OUT/codec_noasm.txt")
 [ "$a" = "$c" ] || { echo "FAIL: assembly $a, Pascal $c"; exit 1; }
+echo "$c"
+echo "== the C makes the same streams as the Pascal (PMPA_NOC=1)"
+PMPA_NOC=1 "$OUT/fast/test_codec" $SAMPLES tests/odd > "$OUT/codec_noc.txt" || { cat "$OUT/codec_noc.txt"; exit 1; }
+c=$(grep '^streams ' "$OUT/codec_noc.txt")
+[ "$a" = "$c" ] || { echo "FAIL: C $a, Pascal $c"; exit 1; }
 echo "$c"
 echo "all green"

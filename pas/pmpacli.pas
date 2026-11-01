@@ -17,7 +17,7 @@ program pmpacli;
 uses
   {$ifdef UNIX} cthreads, {$endif}
   {$ifdef MSWINDOWS} Windows, {$endif}
-  SysUtils, Classes, pmpablake3, pmpaformat, pmpampeg, pmpacodec, pmpapack, pmpafs, pmpacpu;
+  SysUtils, Classes, pmpablake3, pmpaformat, pmpampeg, pmpacodec, pmpac, pmpapack, pmpafs, pmpacpu;
 
 const
   DEFAULT_MAX_OUTPUT = 256 * 1024 * 1024;

@@ -1,0 +1,31 @@
+#!/bin/sh
+# The C part of PMPA (pmpal3c.c: stream version 6's model of Layer III's
+# values) as an object for FreePascal to link: pmpac.pas takes it with
+# {$L pmpal3c.o}, found through -Fo<dir>. As PJA's build_c.sh.
+#
+#   pas/build_c.sh <out dir> [extra C flags]
+#
+# CC picks the compiler (cc by default): gcc or clang, native or a cross
+# compiler (x86_64-w64-mingw32-gcc, i686-w64-mingw32-gcc, "gcc -m32").
+#
+# The object calls no library and needs no runtime: no stack protector, no
+# loop turned into memset or memcpy (gcc's -fno-tree-loop-distribute-patterns,
+# clang's -fno-builtin), no position-independent code where the executable is
+# not (32-bit x86). -fwrapv keeps the hashes' wrapping arithmetic defined.
+set -eu
+OUT=${1:?usage: build_c.sh <out dir> [extra C flags]}
+shift
+HERE=$(cd "$(dirname "$0")" && pwd)
+CC=${CC:-cc}
+FLAGS="-O3 -fwrapv -ffp-contract=off -fno-stack-protector -std=c99 -Wall"
+if $CC --version 2>/dev/null | grep -qi clang; then
+  FLAGS="$FLAGS -fno-builtin"
+else
+  FLAGS="$FLAGS -fno-tree-loop-distribute-patterns"
+fi
+case "$CC $*" in
+  *-m32*|*i686*|*i386*) FLAGS="$FLAGS -fno-pic" ;;
+esac
+mkdir -p "$OUT"
+# shellcheck disable=SC2086
+$CC $FLAGS "$@" -c "$HERE/pmpal3c.c" -o "$OUT/pmpal3c.o"
