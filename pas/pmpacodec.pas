@@ -51,7 +51,7 @@ interface
 uses SysUtils, pmpampeg, pmpal3, pmpahuff, pmpal12;
 
 const
-  STREAM_VERSION = 6;
+  STREAM_VERSION = 7;
   PMPA_VERSION = '0.1.0';
 
 type
@@ -108,6 +108,13 @@ type
   TSamplesFn = function(var s: TSamplesC): LongInt; cdecl;
 
 var
+  { Version 7 cuts a file into bands, each coded with a model of its own, so
+    that bands are coded and decoded at once on as many threads. A new band
+    starts at the first segment this many bytes or more after the last
+    one's start. The stream records the bands: the decoder never looks at
+    this. The tests lower it, to code small files in many bands. }
+  BandBytes: Int64 = 1 shl 21;
+
   { stream version 6's Layer III values in C (pmpac.pas sets it); nil: in
     Pascal. The streams are the same either way. }
   ValuesC: TValuesFn = nil;
@@ -158,9 +165,9 @@ const
   { version 4 }
   V_TABLE_BITS = 20;
   V_INPUTS = 11;  { 10 counters and a bias }
-  S_INPUTS = 5;
+  S_INPUTS = 5;   { the scalefactors: 4 counters and a bias }
   EST_BUCKETS = 14;
-  L_INPUTS = 7;   { Layer I and II: 6 counters and a bias }   { the scalefactors: 4 counters and a bias }
+  L_INPUTS = 7;   { Layer I and II: 6 counters and a bias }
   { MPEG-1's preemphasis, added to a long band's scalefactor when preflag }
   PRETAB: array[0..21] of Integer = (0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,2,2,3,3,3,2,0);
   V_LIMIT = 255;
@@ -171,6 +178,7 @@ type
   TModel = record
     decoding: Boolean;
     ver: Integer;           { the stream's version }
+    bandStart: Int64;       { where the band being coded starts (0 before version 7) }
     enc: TArithEncoder;
     dec: TArithDecoder;
     kinds: array[0..KIND_START, 1..7] of TAdaptiveBit;
@@ -388,7 +396,9 @@ end;
 procedure CodeBytes(var m: TModel; var d: TBytes; first, len: Int64; cls: Integer);
 var i: Int64; prev, node, k, x: Integer;
 begin
-  if first > 0 then prev := d[first - 1] else prev := 0;
+  { the byte before, but not from before the band: another thread may not
+    have decoded it yet }
+  if first > m.bandStart then prev := d[first - 1] else prev := 0;
   { a while loop: a 32-bit FreePascal has no Int64 loop counters }
   i := first;
   while i < first + len do
@@ -397,7 +407,7 @@ begin
     for k := 7 downto 0 do
       node := node * 2 + m.Bit((x shr k) and 1, m.bytes[cls, prev * cls, node], LIMIT_BYTES);
     x := node - 256;
-    d[i] := x;
+    if m.decoding then d[i] := x;
     prev := x;
     Inc(i);
   end;
@@ -1195,7 +1205,7 @@ begin
   ok := m.Bit(Ord(stored = crc), m.crcOk, LIMIT_STRUCT);
   if ok = 1 then stored := crc
   else stored := CodeField(m, stored, 16, F_CRC, crc);
-  d[pos + 4] := stored shr 8; d[pos + 5] := stored and $FF;
+  if m.decoding then begin d[pos + 4] := stored shr 8; d[pos + 5] := stored and $FF; end;
 end;
 
 { ---------- Layer I and II (version 5) ---------- }
@@ -1665,17 +1675,20 @@ begin
   if Result > maxv then Result := -1;
 end;
 
-{ Every segment, the same code both ways: the encoder takes them from
-  scan, the decoder from the stream. ver: the stream's version. False if the
-  stream is damaged. }
-function Walk(var m: TModel; var d: TBytes; total: Int64; const scan: TMpegScan; ver: Integer): Boolean;
+{ Every segment from byte startPos to byte total, the same code both ways:
+  the encoder takes them from scan (from its segment firstSeg), the decoder
+  from the stream. ver: the stream's version. False if the stream is
+  damaged. A run of Layer III frames ends at total: a band starts its own. }
+function Walk(var m: TModel; var d: TBytes; startPos, total: Int64; const scan: TMpegScan;
+  firstSeg, ver: Integer): Boolean;
 var
   pos, len: Int64; i, kind, freeLen, goesOn: Integer; h: UInt32; hd, hn: TMpegHeader;
   run: TRun; inRun: Boolean;
 begin
   Result := False;
   m.ver := ver;
-  pos := 0; i := 0; inRun := False;
+  m.bandStart := startPos;
+  pos := startPos; i := firstSeg; inRun := False;
   run := Default(TRun);
   while pos < total do
   begin
@@ -1696,8 +1709,11 @@ begin
       if hd.bitrateIndex = 0 then freeLen := CodeFree(m, freeLen);
       len := FrameLength(hd, freeLen);
       if (len < 4) or (len > total - pos) then Exit;
-      d[pos] := h shr 24; d[pos + 1] := (h shr 16) and $FF;
-      d[pos + 2] := (h shr 8) and $FF; d[pos + 3] := h and $FF;
+      if m.decoding then
+      begin
+        d[pos] := h shr 24; d[pos + 1] := (h shr 16) and $FF;
+        d[pos + 2] := (h shr 8) and $FF; d[pos + 3] := h and $FF;
+      end;
       if (ver >= 2) and (hd.layer = 3) then
       begin
         if inRun and not SameStream(run.first, hd) then Exit;
@@ -1706,7 +1722,8 @@ begin
         { does the run go on with the next segment? }
         goesOn := 0;
         if not m.decoding then
-          goesOn := Ord((i + 1 < scan.count) and (scan.segments[i + 1].kind = skFrame)
+          goesOn := Ord((i + 1 < scan.count) and (scan.segments[i + 1].offset < total)
+            and (scan.segments[i + 1].kind = skFrame)
             and DecodeHeader(HeaderAt(d, scan.segments[i + 1].offset), hn)
             and (hn.layer = 3) and SameStream(run.first, hn));
         Part(0);
@@ -1744,18 +1761,180 @@ begin
   Result := not inRun;
 end;
 
-{ the stream of d; with live, its bytes also go to live as they come out
-  (and live is finished, even on an exception) }
-function Encode(const d: TBytes; const scan: TMpegScan; ver: Integer; live: TLiveStream = nil): TBytes;
-var m: PModel; work, body: TBytes; n: SizeInt;
+{ ---------- bands (version 7) ---------- }
+
+type
+  { a file's bands: each from its first segment to the next band's, coded
+    with a model of its own }
+  TBands = record
+    n: Integer;
+    firstSeg: array of Integer;
+    start: array of Int64;        { the file's byte where each starts }
+    body: array of TBytes;        { each one's arithmetic-coded bytes }
+  end;
+
+{ the bands of a file: a new one at the first segment that starts BandBytes
+  or more after the band before; by the file alone, whatever the threads }
+procedure PlanBands(const scan: TMpegScan; out b: TBands);
+var i: Integer;
 begin
+  b := Default(TBands);
+  SetLength(b.firstSeg, scan.count + 1);
+  SetLength(b.start, scan.count + 1);
+  b.n := 1; b.firstSeg[0] := 0; b.start[0] := 0;
+  for i := 1 to scan.count - 1 do
+    if scan.segments[i].offset - b.start[b.n - 1] >= BandBytes then
+    begin
+      b.firstSeg[b.n] := i; b.start[b.n] := scan.segments[i].offset;
+      Inc(b.n);
+    end;
+  SetLength(b.firstSeg, b.n); SetLength(b.start, b.n);
+  SetLength(b.body, b.n);
+end;
+
+type
+  { what a band thread needs: the jobs are taken in turn }
+  TBandWork = record
+    decoding: Boolean;
+    d: TBytes;                    { the file: read when encoding, written when decoding }
+    total: Int64;
+    scan: TMpegScan;              { encoding }
+    bands: ^TBands;
+    ver: Integer;
+    next: LongInt;
+    failed: Boolean;
+  end;
+  PBandWork = ^TBandWork;
+
+procedure CodeBand(w: PBandWork; k: Integer);
+var m: PModel; stop: Int64; ok: Boolean;
+begin
+  if k + 1 < w^.bands^.n then stop := w^.bands^.start[k + 1] else stop := w^.total;
+  New(m);
+  try
+    try
+      m^.Init(w^.decoding);
+      if w^.decoding then
+      begin
+        { from a copy of its own bytes: what it reads past its end is
+          zeros, as it was for the encoder }
+        m^.dec.Init(w^.bands^.body[k], 0);
+        ok := Walk(m^, w^.d, w^.bands^.start[k], stop, w^.scan, 0, w^.ver);
+      end
+      else
+      begin
+        m^.enc.Init;
+        ok := Walk(m^, w^.d, w^.bands^.start[k], stop, w^.scan, w^.bands^.firstSeg[k], w^.ver);
+        w^.bands^.body[k] := m^.enc.Finish;
+      end;
+      if not ok then w^.failed := True;
+    except
+      w^.failed := True;
+    end;
+  finally
+    Dispose(m);
+  end;
+end;
+
+function BandThread(p: Pointer): PtrInt;
+var w: PBandWork; k: LongInt;
+begin
+  w := p;
+  repeat
+    k := InterlockedIncrement(w^.next) - 1;
+    if k >= w^.bands^.n then Break;
+    CodeBand(w, k);
+  until False;
+  Result := 0;
+end;
+
+{ every band, on up to `threads` threads (this one among them) }
+procedure RunBands(var w: TBandWork; threads: Integer);
+var ids: array of TThreadID; i, extra: Integer;
+begin
+  w.next := 0; w.failed := False;
+  extra := threads - 1;
+  if extra > w.bands^.n - 1 then extra := w.bands^.n - 1;
+  if extra < 0 then extra := 0;
+  ids := nil;
+  SetLength(ids, extra);
+  for i := 0 to extra - 1 do ids[i] := BeginThread(@BandThread, @w);
+  BandThread(@w);
+  for i := 0 to extra - 1 do
+  begin
+    WaitForThreadTerminate(ids[i], 0);
+    CloseThread(ids[i]);
+  end;
+end;
+
+{ the stream of d; with live, its bytes also go to live as they come out
+  (and live is finished, even on an exception). Version 7: the bands, on up
+  to `threads` threads (never with live). }
+function Encode(const d: TBytes; const scan: TMpegScan; ver: Integer; live: TLiveStream = nil;
+  threads: Integer = 1): TBytes;
+var m: PModel; work, body: TBytes; n: SizeInt; b: TBands; w: TBandWork; k: Integer;
+begin
+  { the encoder only reads the file: shared, not copied }
+  work := d;
+  Result := nil;
+  SetLength(Result, 16);
+  Result[0] := ver; n := 1;
+  PutVarint(Result, n, Length(d));
+  if ver >= 7 then
+  begin
+    PlanBands(scan, b);
+    if (live <> nil) and (b.n = 1) then
+    begin
+      { one band, verified on another thread as it is written }
+      New(m);
+      try
+        try
+          m^.Init(False);
+          m^.enc.InitLive(live);
+          Walk(m^, work, 0, Length(d), scan, 0, ver);
+          m^.enc.Finish;
+          b.body[0] := live.Bytes;
+        except
+          live.Finish;
+          raise;
+        end;
+      finally
+        Dispose(m);
+      end;
+      PutVarint(Result, n, 1);
+      PutVarint(Result, n, Length(b.body[0]));
+      SetLength(Result, n + Length(b.body[0]));
+      if Length(b.body[0]) > 0 then Move(b.body[0][0], Result[n], Length(b.body[0]));
+      Exit;
+    end;
+    w := Default(TBandWork);
+    w.decoding := False; w.d := work; w.total := Length(d); w.scan := scan;
+    w.bands := @b; w.ver := ver;
+    RunBands(w, threads);
+    if w.failed then raise Exception.Create('a band did not encode');
+    { the bands: how many, where each starts in the file (the first at 0),
+      each one's length; then their bytes }
+    PutVarint(Result, n, b.n);
+    for k := 0 to b.n - 1 do
+    begin
+      if k > 0 then PutVarint(Result, n, b.start[k] - b.start[k - 1]);
+      PutVarint(Result, n, Length(b.body[k]));
+    end;
+    for k := 0 to b.n - 1 do
+    begin
+      if n + Length(b.body[k]) > Length(Result) then SetLength(Result, 2 * (n + Length(b.body[k])));
+      if Length(b.body[k]) > 0 then Move(b.body[k][0], Result[n], Length(b.body[k]));
+      Inc(n, Length(b.body[k]));
+    end;
+    SetLength(Result, n);
+    Exit;
+  end;
   New(m);
   try
     try
       m^.Init(False);
       if live <> nil then m^.enc.InitLive(live) else m^.enc.Init;
-      work := Copy(d, 0, Length(d));
-      Walk(m^, work, Length(d), scan, ver);
+      Walk(m^, work, 0, Length(d), scan, 0, ver);
       body := m^.enc.Finish;
       if live <> nil then body := live.Bytes;
     except
@@ -1766,16 +1945,14 @@ begin
   finally
     Dispose(m);
   end;
-  Result := nil;
-  SetLength(Result, 16);
-  Result[0] := ver; n := 1;
-  PutVarint(Result, n, Length(d));
   SetLength(Result, n + Length(body));
   if Length(body) > 0 then Move(body[0], Result[n], Length(body));
 end;
 
 function DecodeFile(const s: TBytes; maxOut: Int64; out d: TBytes; threads: Integer): TDecodeStatus;
-var m: PModel; p: SizeInt; total: Int64; ok: Boolean; none: TMpegScan;
+var
+  m: PModel; p: SizeInt; total, nb, gap, len, at: Int64; ok: Boolean; none: TMpegScan;
+  b: TBands; w: TBandWork; k: Integer;
 begin
   d := nil;
   if Length(s) = 0 then Exit(dsEmpty);
@@ -1785,13 +1962,52 @@ begin
   total := GetVarint(s, p, High(Int64));
   if total < 1 then Exit(dsBadStream);
   if total > maxOut then Exit(dsTooBig);
-  SetLength(d, total);
   none.Clear;
+  if s[0] >= 7 then
+  begin
+    { the bands' table: each must start after the one before and inside
+      the file, and their bytes must be in the stream }
+    nb := GetVarint(s, p, total);
+    if nb < 1 then Exit(dsBadStream);
+    b := Default(TBands);
+    b.n := Integer(nb);
+    SetLength(b.start, b.n); SetLength(b.body, b.n); SetLength(b.firstSeg, b.n);
+    at := 0;
+    for k := 0 to b.n - 1 do
+    begin
+      if k > 0 then
+      begin
+        gap := GetVarint(s, p, total);
+        if gap < 1 then Exit(dsBadStream);
+        Inc(at, gap);
+        if at >= total then Exit(dsBadStream);
+      end;
+      b.start[k] := at;
+      len := GetVarint(s, p, Length(s));
+      if len < 0 then Exit(dsBadStream);
+      SetLength(b.body[k], len);         { the length, for now }
+    end;
+    for k := 0 to b.n - 1 do
+    begin
+      len := Length(b.body[k]);
+      if len > Length(s) - p then Exit(dsBadStream);
+      if len > 0 then Move(s[p], b.body[k][0], len);
+      Inc(p, len);
+    end;
+    SetLength(d, total);
+    w := Default(TBandWork);
+    w.decoding := True; w.d := d; w.total := total; w.scan := none;
+    w.bands := @b; w.ver := s[0];
+    RunBands(w, threads);
+    if w.failed then begin d := nil; Exit(dsBadStream); end;
+    Exit(dsOk);
+  end;
+  SetLength(d, total);
   New(m);
   try
     m^.Init(True);
     m^.dec.Init(s, p);
-    ok := Walk(m^, d, total, none, s[0]);
+    ok := Walk(m^, d, 0, total, none, 0, s[0]);
   finally
     Dispose(m);
   end;
@@ -1826,7 +2042,7 @@ begin
       m^.Init(True);
       m^.dec.InitLive(v^.live);
       SetLength(v^.back, v^.total);
-      v^.ok := Walk(m^, v^.back, v^.total, none, STREAM_VERSION);
+      v^.ok := Walk(m^, v^.back, 0, v^.total, none, 0, STREAM_VERSION);
     except
       v^.ok := False;
     end;
@@ -1837,14 +2053,15 @@ begin
 end;
 
 function EncodeFile(const d: TBytes; out s: TBytes; threads: Integer): TEncodeStatus;
-var scan: TMpegScan; back: TBytes; v: TVerifier; tid: TThreadID; same: Boolean;
+var scan: TMpegScan; back: TBytes; v: TVerifier; tid: TThreadID; same: Boolean; b: TBands;
 begin
   s := nil;
   ScanMpeg(d, scan);
   if scan.frames = 0 then Exit(esNotMpeg);
-  if threads >= 2 then
+  PlanBands(scan, b);
+  if (threads >= 2) and (b.n = 1) then
   begin
-    { the check on a second thread, as the stream comes out }
+    { one band: the check on a second thread, as the stream comes out }
     v.live := TLiveStream.Create;
     v.total := Length(d); v.back := nil; v.ok := False;
     tid := BeginThread(@VerifierRun, @v);
@@ -1864,9 +2081,15 @@ begin
     if not same then begin s := nil; Exit(esNotBack); end;
     Exit(esOk);
   end;
-  s := Encode(d, scan, STREAM_VERSION);
-  { the one guarantee: it has to come back }
-  if (DecodeFile(s, Length(d), back) <> dsOk) or (Length(back) <> Length(d))
+  { the bands at once, then decoded at once: the one guarantee, it has to
+    come back }
+  try
+    s := Encode(d, scan, STREAM_VERSION, nil, threads);
+  except
+    s := nil;
+    Exit(esNotBack);
+  end;
+  if (DecodeFile(s, Length(d), back, threads) <> dsOk) or (Length(back) <> Length(d))
      or not CompareMem(@back[0], @d[0], Length(d)) then
   begin
     s := nil;

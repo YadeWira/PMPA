@@ -350,3 +350,47 @@ More would change the format: fewer contexts for the commonest decisions
 (four fewer cost 0.13 points on Layer III), cheaper hashes, or a file cut
 into bands coded on their own (PRA's way), which costs a little of the
 model's learning at each cut.
+
+## The stream, version 7: bands
+
+Version 7 codes what version 6 does, in bands: a file is cut, at a
+segment's start, into bands of 2 MiB or more (`BandBytes`), each coded
+with a model and an arithmetic coder of its own, so that the bands of a
+file are coded and decoded at once on as many threads. The cut depends on
+the file alone: the stream is the same whatever the threads (`test_codec`
+checks it with bands of 4 KB, and decoding on 1 and on 4 threads).
+
+```
+version     1 B      7
+length      varint   the original's length
+bands       varint   how many
+            then, for each: where it starts in the file (from the band
+            before; the first at 0), varint; its bytes' length, varint
+            then their bytes, one band after the other
+```
+
+A run of Layer III frames ends at a band's end: the next band starts its
+own slot stream, and the frames at its start whose main data the bit
+reservoir puts in the band before are not mapped, their slots coded as
+filler in the band that holds them. No band reads or writes a byte of
+another's (the bytes before a band are not even a context: another thread
+may not have decoded them yet), and each band is decoded from a copy of
+its own bytes, so that what its coder reads past its end is zeros, as it
+was for the encoder. The encoder only reads the file: the bands share it.
+
+A file of one band is verified as before, on a second thread as it is
+written; one of several is coded on up to `-th` threads, then decoded on as
+many and compared.
+
+Measured on 01/11/2026 (clang 19; the machine had other work running, a
+load of 14 to 74):
+
+| | version 6 | version 7 |
+|---|---|---|
+| the corpus's Layer III files | 84.07% | 84.12% |
+| Layer II from samples.ffmpeg.org | 72.13% | 72.17% |
+| a 6.5 MB MP3 (4 bands), compress on 1 / 2 / 4 threads | 12.1 / 6.1 s | 12.1 / 6.6 / 3.6 s |
+| the same, extract on 1 / 2 / 4 threads | 4.7 s | 5.2 / 3.0 / 1.6 s |
+
+With more files than threads each file gets one thread, as before, and
+the bands of a file are coded one after the other.

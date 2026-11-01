@@ -85,6 +85,24 @@ begin
   end;
   Check(nOk >= 41, 'streams that came back: ' + IntToStr(nOk));
 
+  Writeln('bands');
+  { small bands, so that the samples are cut into many: each file comes
+    back, the stream is the same whatever the threads, and it decodes the
+    same on 1 thread and on 4 }
+  BandBytes := 4096;
+  survived := True; n := 0;
+  for i := 0 to files.Count - 1 do
+  begin
+    d := LoadFile(files[i]);
+    if EncodeFile(d, s, 1) <> esOk then Continue;
+    Inc(n);
+    if (EncodeFile(d, bad, 4) <> esOk) or not Same(s, bad) then survived := False;
+    if (DecodeFile(s, Length(d), back, 1) <> dsOk) or not Same(d, back) then survived := False;
+    if (DecodeFile(s, Length(d), back, 4) <> dsOk) or not Same(d, back) then survived := False;
+  end;
+  Check(survived and (n >= 41), Format('bands of 4 KB: %d files, the same on 1 and 4 threads', [n]));
+  BandBytes := 1 shl 21;
+
   Writeln('verified on a second thread as it is written');
   survived := True; n := 0;
   for i := 0 to files.Count - 1 do

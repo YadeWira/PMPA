@@ -26,12 +26,12 @@ build it, and how it works. The command is described in [doc/CLI.md](doc/CLI.md)
 in [doc/FORMAT.md](doc/FORMAT.md), the codec in [doc/CODEC.md](doc/CODEC.md).
 
 **Status: in development.** The container and the command work end to end,
-and every layer is modelled: Layer III files come out at 84.07% of their
-size, where packMP3 3.0f makes 84.36%, and Layer II at 72.13%, where
+and every layer is modelled: Layer III files come out at 84.12% of their
+size, where packMP3 3.0f makes 84.36%, and Layer II at 72.17%, where
 packMP2 0.8 makes 76.95% at best (measured 01/11/2026, [how][wBench];
-[doc/CODEC.md](doc/CODEC.md)). It is slow for now: about 1.1 MB/s to
-compress a file on 2 threads and 1.4 MB/s to extract it, where packMP3
-does about 3 MB/s. Built bottom-up, each layer with its tests:
+[doc/CODEC.md](doc/CODEC.md)). A 6.5 MB MP3 compresses in 3.6 s and
+extracts in 1.6 s on 4 threads (in bands of 2 MiB), 12.1 s and 5.2 s on
+one; packMP3 compresses it in 2 s. Built bottom-up, each layer with its tests:
 
 | Layer | Unit | Status |
 |---|---|---|
@@ -46,6 +46,7 @@ does about 3 MB/s. Built bottom-up, each layer with its tests:
 | version 5: Layer I and II (allocation, scale factors, samples) | `pas/pmpal12.pas` | done |
 | version 6: faster (contexts hashed once a value, verifying on a second thread) | | done |
 | the models' hot loops in C, Layer III's values and Layer I and II's samples (the same streams as the Pascal) | `pas/pmpal3c.c`, `pas/pmpac.pas` | done |
+| version 7: bands of 2 MiB coded and decoded at once on several threads | `pas/pmpacodec.pas` | done |
 
 ## Building and testing
 
