@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
+
 typedef struct { uint16_t p; uint8_t n; uint8_t pad; } counter_t;   /* TCounter, TAdaptiveBit */
 
 /* the encoder: its interval and where its bytes go */
@@ -40,8 +41,16 @@ typedef struct {
 } tables_t;
 
 static tables_t T;
+static int16_t SQUASH_T[4095];              /* squash(d) for d = -2047..2047 */
 
-void pmpac_tables(const tables_t *t) { T = *t; }
+static int32_t squash_calc(int32_t d);
+
+void pmpac_tables(const tables_t *t)
+{
+    int32_t d;
+    T = *t;
+    for (d = -2047; d <= 2047; d++) SQUASH_T[d + 2047] = (int16_t)squash_calc(d);
+}
 
 /* ---------- the coder ---------- */
 
@@ -88,7 +97,7 @@ static const int32_t SQUASH_POINTS[33] = {
     2047, 2549, 2994, 3348, 3607, 3785, 3901, 3975, 4022, 4050, 4068, 4079,
     4085, 4089, 4092, 4093, 4094 };
 
-static int32_t squash(int32_t d)
+static int32_t squash_calc(int32_t d)
 {
     int32_t w, r;
     if (d > 2047) return 4095;
@@ -97,6 +106,37 @@ static int32_t squash(int32_t d)
     d = (d >> 7) + 16;
     r = (SQUASH_POINTS[d] * (128 - w) + SQUASH_POINTS[d + 1] * w + 64) >> 7;
     return r < 1 ? 1 : r;
+}
+
+/* squash, by the table pmpac_tables fills */
+static int32_t squash(int32_t d)
+{
+    if (d > 2047) return 4095;
+    if (d < -2047) return 1;
+    return SQUASH_T[d + 2047];
+}
+
+/* the mixer's dot product and training over n lanes:
+   dot = sum of (x[i] * w[i]) >> 16; w[i] += (x[i] * err) >> 14, clamped to
+   +-W_MAX. (SSE4.1 was tried for these: with 9 lanes, slower, 01/11/2026.) */
+#define W_MAX (1 << 19)
+
+static int32_t dot(const int32_t *x, const int32_t *w, int n)
+{
+    int32_t r = 0;
+    int i;
+    for (i = 0; i < n; i++) r += (x[i] * w[i]) >> 16;
+    return r;
+}
+
+static void train(const int32_t *x, int32_t *w, int n, int32_t err)
+{
+    int i;
+    for (i = 0; i < n; i++) {
+        int32_t wi = w[i] + ((x[i] * err) >> 14);
+        if (wi > W_MAX) wi = W_MAX; else if (wi < -W_MAX) wi = -W_MAX;
+        w[i] = wi;
+    }
 }
 
 static void counter_update(counter_t *c, int bit, int limit)
@@ -135,7 +175,6 @@ static int bitlen(int32_t v) { int r = 0; while (v > 0) { r++; v >>= 1; } return
 #define LIMIT_STRUCT 127
 #define LIMIT_BYTES 60
 #define N_IN 8
-#define W_MAX (1 << 19)
 #define EST_BUCKETS 14
 
 typedef struct {
@@ -174,15 +213,16 @@ static int abit(values_t *s, int bit, counter_t *a, int limit)
 static int decide(values_t *s, int bit, const uint32_t *hs, int sel, int actx)
 {
     counter_t *cp[N_IN];
-    int32_t x[N_IN + 1], *w = s->w + sel * s->inputs;
-    int32_t dot = 0, pr, st, wt, idx, pa, p, err, target, i, r;
+    int32_t x[12] = {0}, *w = s->w + sel * s->inputs;
+    int32_t pr, st, wt, idx, pa, p, err, target, i, r;
     for (i = 0; i < N_IN; i++) {
         cp[i] = &s->vt[hs[i] & s->vtMask];
         x[i] = T.stretch[cp[i]->p >> 4];
     }
     x[N_IN] = 256;
-    for (i = 0; i <= N_IN; i++) dot += (x[i] * w[i]) >> 16;
-    pr = squash(dot);
+    /* pmpamodel's mixer goes on to 12 lanes, the 3 past the inputs at x = 0:
+       their weights neither add nor move, so 9 give the same */
+    pr = squash(dot(x, w, N_IN + 1));
     /* the APM */
     st = T.stretch[pr] + 2048;
     wt = st & 127;
@@ -195,11 +235,7 @@ static int decide(values_t *s, int bit, const uint32_t *hs, int sel, int actx)
     r = code_bit(s, bit, p);
     /* the mixer, the APM, the counters */
     err = ((r << 12) - pr) * s->rate;
-    for (i = 0; i <= N_IN; i++) {
-        int32_t wi = w[i] + ((x[i] * err) >> 14);
-        if (wi > W_MAX) wi = W_MAX; else if (wi < -W_MAX) wi = -W_MAX;
-        w[i] = wi;
-    }
+    train(x, w, N_IN + 1, err);
     target = r ? 65535 : 0;
     s->apm[idx] += (target - s->apm[idx]) >> s->apmRate;
     for (i = 0; i < N_IN; i++) counter_update(cp[i], r, V_LIMIT);
@@ -371,24 +407,19 @@ static int l_abit(samples_t *s, int bit, counter_t *a, int limit)
 static int l_decide(samples_t *s, int bit, const uint32_t *hs, int sel)
 {
     counter_t *cp[L_IN];
-    int32_t x[L_IN + 1], *w = s->w + sel * s->inputs;
-    int32_t dot = 0, pr, p, err, i, r;
+    int32_t x[8] = {0}, *w = s->w + sel * s->inputs;
+    int32_t pr, p, err, i, r;
     for (i = 0; i < L_IN; i++) {
         cp[i] = &s->vt[hs[i] & s->vtMask];
         x[i] = T.stretch[cp[i]->p >> 4];
     }
     x[L_IN] = 256;
-    for (i = 0; i <= L_IN; i++) dot += (x[i] * w[i]) >> 16;
-    pr = squash(dot);
+    pr = squash(dot(x, w, L_IN + 1));
     p = pr * 16;
     if (p < 1) p = 1; else if (p > 65535) p = 65535;
     r = l_bit(s, bit, p);
     err = ((r << 12) - pr) * s->rate;
-    for (i = 0; i <= L_IN; i++) {
-        int32_t wi = w[i] + ((x[i] * err) >> 14);
-        if (wi > W_MAX) wi = W_MAX; else if (wi < -W_MAX) wi = -W_MAX;
-        w[i] = wi;
-    }
+    train(x, w, L_IN + 1, err);
     for (i = 0; i < L_IN; i++) counter_update(cp[i], r, V_LIMIT);
     return r;
 }

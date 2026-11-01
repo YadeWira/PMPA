@@ -426,14 +426,52 @@ begin
 end;
 
 { takes the next input until none is left }
+var
+  { the order the files are taken in: the largest first, so that a big file
+    does not start last and keep every other thread waiting at the end
+    (their lines still come out in the order of the inputs) }
+  order: array of LongInt;
+
 procedure Work;
 var k: LongInt;
 begin
   repeat
     k := InterlockedIncrement(nextJob) - 1;
     if k >= Length(jobs) then Break;
-    RunJob(k);
+    RunJob(order[k]);
   until False;
+end;
+
+{ a file's size, 0 if it cannot be told (the job then says why) }
+function SizeOf_(const f: string): Int64;
+var sr: TSearchRec;
+begin
+  Result := 0;
+  if FindFirst(f, faAnyFile, sr) = 0 then
+  begin
+    Result := sr.Size;
+    FindClose(sr);
+  end;
+end;
+
+procedure LargestFirst;
+var sizes: array of Int64; i, j, t: LongInt;
+begin
+  order := nil; sizes := nil;
+  SetLength(order, Length(jobs));
+  SetLength(sizes, Length(jobs));
+  for i := 0 to High(jobs) do begin order[i] := i; sizes[i] := SizeOf_(jobs[i].name); end;
+  { insertion sort, stable: a few thousand files at most are sorted once }
+  for i := 1 to High(order) do
+  begin
+    t := order[i]; j := i - 1;
+    while (j >= 0) and (sizes[order[j]] < sizes[t]) do
+    begin
+      order[j + 1] := order[j];
+      Dec(j);
+    end;
+    order[j + 1] := t;
+  end;
 end;
 
 type
@@ -463,6 +501,7 @@ begin
   if workers > inputs.Count then workers := inputs.Count;
   bandThreads := threads div workers;
   nextJob := 0; nextPrint := 0;
+  LargestFirst;
   InitCriticalSection(printLock);
   pool := nil;
   SetLength(pool, workers - 1);

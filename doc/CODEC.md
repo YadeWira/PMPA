@@ -326,3 +326,27 @@ the 56 Layer I and II streams from samples.ffmpeg.org, 8 threads, compress
 1.6 s instead of 2.8 s. The suite also checks that the C is in use where
 it is linked (a layout that does not match would leave every comparison
 comparing the Pascal with itself).
+
+## Speed, without touching the format (01/11/2026)
+
+What is left is the models' arithmetic itself: decoding the first 400 KB
+of the 6.5 MB MP3 is 2.58 million decisions, about 376 instructions each
+in C (8 counters looked up and updated, a mixer of 9 inputs trained, an
+APM, the coder), and that is two thirds of the run. Measured with
+callgrind (instructions, which other work on the machine does not move):
+
+- `squash` by a table instead of its interpolation: 2.230 to 2.194
+  billion instructions (1.6%). Kept.
+- The mixer's dot product and training in SSE4.1 (the same integers, four
+  lanes at once): with 9 lanes the calls cost more than they saved, best
+  of three 5.29 s against 4.96 s without. Dropped.
+- The command takes the files largest first (their lines still come out
+  in the order of the inputs), so that a big file does not start last: the
+  56 Layer I and II streams from samples.ffmpeg.org, 8 threads, compress
+  13.3 s -> 8.5 s, extract 6.9 s -> 4.5 s. The corpus (whose time is its
+  6.5 MB file on one thread) does not move beyond the noise of other work.
+
+More would change the format: fewer contexts for the commonest decisions
+(four fewer cost 0.13 points on Layer III), cheaper hashes, or a file cut
+into bands coded on their own (PRA's way), which costs a little of the
+model's learning at each cut.
