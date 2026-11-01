@@ -87,6 +87,26 @@ function SlotsOffset(const hd: TMpegHeader): Integer;
   part23): MPEG-1 by scalefac_compress, block type and scfsi; MPEG-2 and 2.5
   by scalefac_compress, block type and intensity stereo }
 function Part2Bits(const si: TSideInfo; g, c: Integer; const hd: TMpegHeader): Integer;
+type
+  { a granule's scalefactors as sent: their widths in bits, in the order
+    they are sent, and each one's place in its block kind's full layout
+    (what scfsi does not send has no entry) }
+  TScfLayout = record
+    n: Integer;
+    kind: Integer;                       { 0 long, 1 short, 2 mixed }
+    width, place: array[0..63] of Integer;
+  end;
+
+{ the scalefactors' layout of granule g, channel c; the widths add up to
+  Part2Bits }
+procedure ScfLayout(const si: TSideInfo; g, c: Integer; const hd: TMpegHeader; out L: TScfLayout);
+type
+  TValuePlaces = array[0..575] of SmallInt;
+
+{ for each of a granule's 576 values: the place of its scalefactor in
+  ScfLayout's full layout (-1 for the bands that have none), and its window
+  (0 to 2 in short blocks, 0 otherwise) }
+procedure ValuePlaces(const gi: TGranuleInfo; const hd: TMpegHeader; out place, win: TValuePlaces);
 { where the big values' regions 1 and 2 start, in values (0 to 576) }
 procedure Regions(const gi: TGranuleInfo; const hd: TMpegHeader; out r1, r2: Integer);
 
@@ -328,6 +348,115 @@ begin
   end;
   Result := 0;
   for i := 0 to 3 do Inc(Result, slen[i] * NR_OF_SFB[k, kind, i]);
+end;
+
+procedure ScfLayout(const si: TSideInfo; g, c: Integer; const hd: TMpegHeader; out L: TScfLayout);
+var gi: TGranuleInfo; s1, s2, sfc, k, i, j, part, place: Integer; slen, nr: array[0..3] of Integer;
+
+  procedure Add(w, pl: Integer);
+  begin
+    L.width[L.n] := w; L.place[L.n] := pl; Inc(L.n);
+  end;
+
+begin
+  L := Default(TScfLayout);
+  gi := si.gr[g, c];
+  if (gi.winSwitch = 0) or (gi.blockType <> 2) then L.kind := 0
+  else if gi.mixed = 1 then L.kind := 2
+  else L.kind := 1;
+  if not si.lsf then
+  begin
+    s1 := SLEN_MPEG1[gi.sfCompress and 15, 0]; s2 := SLEN_MPEG1[gi.sfCompress and 15, 1];
+    case L.kind of
+      0:
+        for i := 0 to 20 do
+        begin
+          if i < 6 then part := 0 else if i < 11 then part := 1 else if i < 16 then part := 2 else part := 3;
+          if (g = 1) and (si.scfsi[c, part] = 1) then Continue;
+          if part < 2 then Add(s1, i) else Add(s2, i);
+        end;
+      1:
+        for i := 0 to 35 do
+          if i < 18 then Add(s1, i) else Add(s2, i);
+    else
+      begin
+        for i := 0 to 7 do Add(s1, i);              { long bands 0-7 }
+        for i := 8 to 16 do Add(s1, i);             { short bands 3-5, 3 windows }
+        for i := 17 to 34 do Add(s2, i);            { short bands 6-11 }
+      end;
+    end;
+  end
+  else
+  begin
+    { the same reading of scalefac_compress as Part2Bits }
+    sfc := gi.sfCompress;
+    slen[3] := 0;
+    if (c = 1) and (hd.mode = 1) and ((hd.modeExt and 1) <> 0) then
+    begin
+      sfc := sfc shr 1;
+      if sfc < 180 then begin slen[0] := sfc div 36; slen[1] := (sfc mod 36) div 6; slen[2] := (sfc mod 36) mod 6; k := 3; end
+      else if sfc < 244 then begin Dec(sfc, 180); slen[0] := (sfc and 63) shr 4; slen[1] := (sfc and 15) shr 2; slen[2] := sfc and 3; k := 4; end
+      else begin Dec(sfc, 244); slen[0] := sfc div 3; slen[1] := sfc mod 3; slen[2] := 0; k := 5; end;
+    end
+    else if sfc < 400 then begin slen[0] := (sfc shr 4) div 5; slen[1] := (sfc shr 4) mod 5; slen[2] := (sfc and 15) shr 2; slen[3] := sfc and 3; k := 0; end
+    else if sfc < 500 then begin Dec(sfc, 400); slen[0] := (sfc shr 2) div 5; slen[1] := (sfc shr 2) mod 5; slen[2] := sfc and 3; k := 1; end
+    else begin Dec(sfc, 500); slen[0] := sfc div 3; slen[1] := sfc mod 3; slen[2] := 0; k := 2; end;
+    for i := 0 to 3 do nr[i] := NR_OF_SFB[k, L.kind, i];
+    place := 0;
+    for i := 0 to 3 do
+      for j := 1 to nr[i] do
+      begin
+        Add(slen[i], place);
+        Inc(place);
+      end;
+  end;
+end;
+
+procedure ValuePlaces(const gi: TGranuleInfo; const hd: TMpegHeader; out place, win: TValuePlaces);
+var i, sfb, w, j, start, width, longBands, firstShort, base: Integer;
+begin
+  for i := 0 to 575 do begin place[i] := -1; win[i] := 0; end;
+  i := 0;
+  if (gi.winSwitch = 0) or (gi.blockType <> 2) then
+  begin
+    for sfb := 0 to 21 do
+      for j := 1 to SFB_LONG[hd.ver, hd.rateIndex, sfb] do
+      begin
+        if i > 575 then Exit;
+        if sfb < 21 then place[i] := sfb;
+        Inc(i);
+      end;
+    Exit;
+  end;
+  { short blocks: band by band, each band's 3 windows one after the other;
+    mixed blocks start with long bands (8 in MPEG-1, 6 otherwise) up to the
+    short band 3 }
+  firstShort := 0; base := 0;
+  if gi.mixed = 1 then
+  begin
+    if hd.ver = mvMpeg1 then longBands := 8 else longBands := 6;
+    for sfb := 0 to longBands - 1 do
+      for j := 1 to SFB_LONG[hd.ver, hd.rateIndex, sfb] do
+      begin
+        if i > 575 then Exit;
+        place[i] := sfb; Inc(i);
+      end;
+    firstShort := 3; base := longBands;
+  end;
+  for sfb := firstShort to 12 do
+  begin
+    width := SFB_SHORT[hd.ver, hd.rateIndex, sfb];
+    start := i;
+    for w := 0 to 2 do
+      for j := 1 to width do
+      begin
+        if i > 575 then Exit;
+        if sfb < 12 then place[i] := base + (sfb - firstShort) * 3 + w;
+        win[i] := w;
+        Inc(i);
+      end;
+    if i = start then Break;
+  end;
 end;
 
 procedure Regions(const gi: TGranuleInfo; const hd: TMpegHeader; out r1, r2: Integer);

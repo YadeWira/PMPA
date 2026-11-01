@@ -5,7 +5,8 @@ Licensed under the MIT License (see LICENSE).
 Code shared with PJA and PRA
 ----------------------------
 
-pas/pmpaarith.pas (binary arithmetic coder), pas/pmpablake3.pas (BLAKE3),
+pas/pmpaarith.pas (binary arithmetic coder), pas/pmpamodel.pas (counters,
+mixer and APM, with its SSE4.1 assembly), pas/pmpablake3.pas (BLAKE3),
 pas/pmpaformat.pas (the container), pas/pmpafs.pas (verified writing),
 pas/pmpapack.pas, pas/pmpacpu.pas, pas/pmpacli.pas (the command, adapted),
 their tests (test_format, test_pmpafs, cli.sh, adapted), pas/pmpa.inc and

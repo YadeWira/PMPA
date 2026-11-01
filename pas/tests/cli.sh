@@ -50,6 +50,16 @@ check "an extension the format does not keep: by the content (.mp1)" bash -c "
   '$PMPA' x -q '$W/odd.pmpa' -o '$W/oddx/' && cmp -s '$W/in/l1_192k_44k_stereo.mp1' '$W/oddx/odd.mp1'"
 check "list shows the original size" bash -c "'$PMPA' list '$W/pmpa/l3_cbr128_44k_joint.pmpa' | grep -q 'original $(stat -c %s "$W/in/l3_cbr128_44k_joint.mp3") B'"
 
+# Tables a codec builds on first use, when two threads get there at once,
+# were an access violation once (01/11/2026): each process's first files
+# go to 8 threads at once, 20 times over
+check "20 runs of x and a with -th 8: no thread trips over another" bash -c "
+  for k in \$(seq 1 20); do
+    rm -rf '$W/race'; mkdir -p '$W/race/p' '$W/race/x'
+    '$PMPA' x -q -th 8 '$W'/pmpa/*.pmpa -o '$W/race/x/' || exit 1
+    '$PMPA' a -q -th 8 '$W'/in/*.mp? -o '$W/race/p/' || exit 1
+  done"
+
 echo "--- existing outputs"
 cp "$W/in/l2_64k_32k_mono_crc.mp2" "$W/g.mp2"; "$PMPA" a -q "$W/g.mp2"
 echo old > "$W/g.mp2"

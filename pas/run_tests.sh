@@ -46,4 +46,9 @@ $FPC -O3 -dPMPA_FAST -Fupas -Fipas -FU"$OUT/fast" -FE"$OUT/fast" pas/tests/test_
 a=$(grep '^streams ' "$OUT/codec.txt"); b=$(grep '^streams ' "$OUT/codec_fast.txt")
 [ -n "$a" ] && [ "$a" = "$b" ] || { echo "FAIL: checked $a, fast $b"; exit 1; }
 echo "$a"
+echo "== the assembly makes the same streams as the Pascal (PMPA_NOASM=1)"
+PMPA_NOASM=1 "$OUT/fast/test_codec" $SAMPLES tests/odd > "$OUT/codec_noasm.txt" || { cat "$OUT/codec_noasm.txt"; exit 1; }
+c=$(grep '^streams ' "$OUT/codec_noasm.txt")
+[ "$a" = "$c" ] || { echo "FAIL: assembly $a, Pascal $c"; exit 1; }
+echo "$c"
 echo "all green"

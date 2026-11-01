@@ -51,7 +51,7 @@ interface
 uses SysUtils, pmpampeg, pmpal3, pmpahuff;
 
 const
-  STREAM_VERSION = 3;
+  STREAM_VERSION = 4;
   PMPA_VERSION = '0.1.0';
 
 type
@@ -72,9 +72,22 @@ function EncodeStatusName(st: TEncodeStatus): string;
 function EncodeAs(const d: TBytes; ver: Integer): TBytes;
 function DecodeStatusName(st: TDecodeStatus): string;
 
+{$ifdef PMPA_COSTS}
+const
+  COST_NAMES: array[0..31] of string = ('structure', 'other bytes', 'side info', 'filler',
+    'scalefactors', 'raw granules', 'zero flags', 'magnitudes', 'signs', 'tails',
+    ' si mdb', ' si private', ' si scfsi', ' si part23', ' si bigvalues', ' si gain',
+    ' si sfcompress', ' si winswitch', ' si blocktype', ' si mixed', ' si table0',
+    ' si table1', ' si table2', ' si subgain', ' si region0', ' si region1', ' si preflag',
+    ' si sfscale', ' si count1tab', ' si crc', ' quads', ' tail length');
+var
+  { what encoding cost, in bits, by part (the tools' build only) }
+  Costs: array[0..31] of Double;
+{$endif}
+
 implementation
 
-uses pmpaarith, pmpalimits;
+uses {$ifdef PMPA_COSTS} Math, {$endif} pmpaarith, pmpamodel, pmpalimits;
 
 const
   LIMIT_STRUCT = 127;   { the structure (kinds, headers, lengths) is steady }
@@ -86,13 +99,22 @@ const
   F_MDB = 0; F_PRIV = 1; F_SCFSI = 2; F_PART23 = 3; F_BIGV = 4; F_GAIN = 5;
   F_SFC = 6; F_WS = 7; F_BT = 8; F_MIX = 9; F_TAB = 10; { 10, 11, 12 }
   F_SUBG = 13; F_R0 = 14; F_R1 = 15; F_PRE = 16; F_SFS = 17; F_C1 = 18; F_CRC = 19;
-  F_QUADS = 20;
-  N_FIELDS = 21;
+  F_QUADS = 20; F_TAIL = 21;
+  N_FIELDS = 22;
   { the values' contexts: how many of each }
   N_CAP = 7;      { what the table allows: 1, 2, 3, 5, 7, 15, 15 and linbits }
   N_NB = 8;       { the two values before }
   N_PREV = 6;     { the same value in the granule before }
   N_POS = 6;      { where in the granule }
+  { version 4 }
+  V_TABLE_BITS = 20;
+  V_INPUTS = 11;  { 10 counters and a bias }
+  S_INPUTS = 5;
+  EST_BUCKETS = 14;   { the scalefactors: 4 counters and a bias }
+  { MPEG-1's preemphasis, added to a long band's scalefactor when preflag }
+  PRETAB: array[0..21] of Integer = (0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,2,2,3,3,3,2,0);
+  V_LIMIT = 255;
+  V_MIX_RATE = 6;
   HIST_BITS = 12;
 
 type
@@ -109,18 +131,30 @@ type
     bytes: array[0..1, 0..255, 1..255] of TAdaptiveBit;   { [0, 0] for frames }
     { Layer III }
     fields: array[0..N_FIELDS - 1, 0..511, 0..1, 0..1] of TAdaptiveBit;
-    crcOk, runGoesOn: TAdaptiveBit;
+    crcOk, runGoesOn, mappedBit, tailNone: TAdaptiveBit;
+    lastPart23: array[0..1] of Integer;
     slot: array[0..1, 0..(1 shl HIST_BITS) - 1] of TAdaptiveBit;   { [0] main data, [1] filler }
     { version 3: Layer III's Huffman-coded values }
     modelled: TAdaptiveBit;
     zero: array[0..N_CAP - 1, 0..N_NB - 1, 0..N_PREV - 1, 0..N_POS - 1] of TAdaptiveBit;
     gt: array[0..N_CAP - 1, 1..15, 0..N_NB - 1, 0..N_PREV - 1] of TAdaptiveBit;
     sign: TAdaptiveBit;
+    sign4: array[0..2, 0..2, 0..3] of TAdaptiveBit;   { other channel's, value before's, magnitude }
     linLen: array[1..15] of TAdaptiveBit;      { a tree of 4 decisions }
     linLow: array[0..12] of TAdaptiveBit;
     c1Zero: array[0..N_NB - 1, 0..N_PREV - 1, 0..N_POS - 1] of TAdaptiveBit;
     prevVals: array[0..1] of TGranuleValues;
     lastQuads: array[0..1] of Integer;
+    { version 4: the values' decisions, mixed }
+    vt: TCounterTable;
+    vmix: TMixer;
+    lastGain: array[0..1] of Integer;
+    curVals: array[0..1] of TGranuleValues;   { this granule's, for the other channel }
+    smix: TMixer;
+    vapm: TAPM;
+    lastScf: array[0..1, 0..2, 0..63] of Integer;   { by channel, block kind, place }
+    scf: array[0..1, 0..63] of Integer;             { the last granule's of each channel, whole }
+    prevStep: array[0..1, 0..575] of Integer;
     hist: Integer;
     lastSlotBit: Int64;
     lastSi: TSideInfo;
@@ -157,10 +191,12 @@ begin
   for i := 0 to 1 do for j := 0 to 255 do for k := 1 to 255 do bytes[i, j, k].Init;
   for i := 0 to N_FIELDS - 1 do for j := 0 to 511 do for k := 0 to 1 do for l := 0 to 1 do
     fields[i, j, k, l].Init;
-  crcOk.Init; runGoesOn.Init;
+  crcOk.Init; runGoesOn.Init; mappedBit.Init; tailNone.Init;
+  lastPart23[0] := 0; lastPart23[1] := 0;
   for i := 0 to 1 do for j := 0 to (1 shl HIST_BITS) - 1 do slot[i, j].Init;
   hist := 0; lastSlotBit := -2;
   modelled.Init; sign.Init;
+  for i := 0 to 2 do for j := 0 to 2 do for k := 0 to 3 do sign4[i, j, k].Init;
   for i := 0 to N_CAP - 1 do for j := 0 to N_NB - 1 do for k := 0 to N_PREV - 1 do
   begin
     for l := 0 to N_POS - 1 do zero[i, j, k, l].Init;
@@ -171,14 +207,51 @@ begin
   for j := 0 to N_NB - 1 do for k := 0 to N_PREV - 1 do for l := 0 to N_POS - 1 do c1Zero[j, k, l].Init;
   FillChar(prevVals, SizeOf(prevVals), 0);
   lastQuads[0] := 0; lastQuads[1] := 0;
+  vt.Init(V_TABLE_BITS);
+  vmix.Init(V_INPUTS, 16 * EST_BUCKETS, V_MIX_RATE);
+  smix.Init(S_INPUTS, 8, V_MIX_RATE);
+  vapm.Init(16 * 8 * EST_BUCKETS, 7);
+  FillChar(lastScf, SizeOf(lastScf), 0);
+  FillChar(scf, SizeOf(scf), 0);
+  FillChar(prevStep, SizeOf(prevStep), 0);
+  lastGain[0] := 0; lastGain[1] := 0;
+  FillChar(curVals, SizeOf(curVals), 0);
   lastSi := Default(TSideInfo);
   lastHeader := 0; lastFree := 0; prevKind := KIND_START;
+end;
+
+{$ifdef PMPA_COSTS}
+var CostPart: Integer = 0;
+{$endif}
+
+procedure Part(n: Integer); inline;
+begin
+  {$ifdef PMPA_COSTS} CostPart := n; {$endif}
+end;
+
+{ codes bit b (or decodes) at probability p16 = P(1) * 65536, 1..65535 }
+function CodeP(var m: TModel; b, p16: Integer): Integer;
+begin
+  if m.decoding then Result := m.dec.Decode(p16)
+  else begin
+    m.enc.Encode(b, p16); Result := b;
+    {$ifdef PMPA_COSTS}
+    if b = 1 then Costs[CostPart] := Costs[CostPart] - Ln(p16 / 65536) / Ln(2)
+    else Costs[CostPart] := Costs[CostPart] - Ln((65536 - p16) / 65536) / Ln(2);
+    {$endif}
+  end;
 end;
 
 function TModel.Bit(b: Integer; var ab: TAdaptiveBit; limit: Integer): Integer;
 begin
   if decoding then Result := dec.Decode(ab.p)
-  else begin enc.Encode(b, ab.p); Result := b; end;
+  else begin
+    enc.Encode(b, ab.p); Result := b;
+    {$ifdef PMPA_COSTS}
+    if b = 1 then Costs[CostPart] := Costs[CostPart] - Ln(Max(ab.p, 1) / 65536) / Ln(2)
+    else Costs[CostPart] := Costs[CostPart] - Ln(Max(65536 - ab.p, 1) / 65536) / Ln(2);
+    {$endif}
+  end;
   ab.Update(Result, limit);
 end;
 
@@ -280,6 +353,7 @@ end;
 function CodeField(var m: TModel; v, nbits, fid, prev: Integer): Integer;
 var i, b, node, same, pb, ctx: Integer;
 begin
+  Part(10 + fid);
   Result := 0; node := 1; same := 1;
   for i := nbits - 1 downto 0 do
   begin
@@ -292,7 +366,7 @@ begin
   end;
 end;
 
-procedure CodeSideInfo(var m: TModel; var si: TSideInfo);
+procedure CodeSideInfo(var m: TModel; var si: TSideInfo; withPart23: Boolean);
 var g, c, b, i: Integer; p: TGranuleInfo; last: TSideInfo;
 begin
   last := m.lastSi;
@@ -319,7 +393,7 @@ begin
       else p := Default(TGranuleInfo);
       with si.gr[g, c] do
       begin
-        part23 := CodeField(m, part23, 12, F_PART23, p.part23);
+        if withPart23 then part23 := CodeField(m, part23, 12, F_PART23, p.part23);
         bigValues := CodeField(m, bigValues, 9, F_BIGV, p.bigValues);
         globalGain := CodeField(m, globalGain, 8, F_GAIN, p.globalGain);
         if si.lsf then sfCompress := CodeField(m, sfCompress, 9, F_SFC, p.sfCompress)
@@ -466,11 +540,13 @@ begin
       pp := PrevBucket(Abs(m.prevVals[c][i]));
       ps := PosBucket(i);
       a := Abs(v[i]);
+      Part(6);
       if m.Bit(Ord(a <> 0), m.zero[cls, nb, pp, ps], LIMIT_BYTES) = 0 then
       begin
         v[i] := 0;
         Continue;
       end;
+      Part(7);
       k := 1;
       while (k < cap) and (m.Bit(Ord(a > k), m.gt[cls, k, nb, pp], LIMIT_BYTES) = 1) do Inc(k);
       if (lin > 0) and (k = 15) then
@@ -494,6 +570,7 @@ begin
         end;
         k := 15 + e;
       end;
+      Part(8);
       if m.Bit(Ord(v[i] < 0), m.sign, LIMIT_BYTES) = 1 then v[i] := -k else v[i] := k;
     end
     else if i < 2 * gi.bigValues + 4 * quads then
@@ -503,9 +580,13 @@ begin
       if i > 1 then Inc(nb, Abs(v[i - 2]));
       nb := NbBucket(nb);
       pp := PrevBucket(Abs(m.prevVals[c][i]));
+      Part(6);
       if m.Bit(Ord(v[i] <> 0), m.c1Zero[nb, pp, PosBucket(i)], LIMIT_BYTES) = 0 then v[i] := 0
-      else if m.Bit(Ord(v[i] < 0), m.sign, LIMIT_BYTES) = 1 then v[i] := -1
-      else v[i] := 1;
+      else
+      begin
+        Part(8);
+        if m.Bit(Ord(v[i] < 0), m.sign, LIMIT_BYTES) = 1 then v[i] := -1 else v[i] := 1;
+      end;
     end
     else v[i] := 0;
   end;
@@ -513,9 +594,284 @@ begin
   Result := True;
 end;
 
+{ one decision of a value, version 4: the counters of hs mixed, with the
+  mixer's weights of `sel` }
+function Decide(var m: TModel; var mx: TMixer; b: Integer; const hs: array of Cardinal; sel: Integer): Integer;
+var j, p: Integer; cp: array[0..10] of PCounter;
+begin
+  for j := 0 to High(hs) do
+  begin
+    cp[j] := m.vt.At(hs[j]);
+    mx.Add(St16(cp[j]^.p));
+  end;
+  mx.Add(256);
+  p := mx.Mix(sel) * 16;
+  if p < 1 then p := 1 else if p > 65535 then p := 65535;
+  Result := CodeP(m, b, p);
+  mx.Update(Result);
+  for j := 0 to High(hs) do CounterUpdate(cp[j]^, Result, V_LIMIT);
+end;
+
+function Cap15(n: Integer): Integer; inline;
+begin
+  if n > 15 then Result := 15 else Result := n;
+end;
+
+{ 0, 1, 2, 3, 4-5, 6-7, 8-11, 12-15, 16-23, 24-31, 32-47, 48-63, 64-95, 96+ }
+function EstBucket(n: Integer): Integer; inline;
+var b: Integer;
+begin
+  if n < 4 then Exit(n);
+  b := BitLen(n);                       { 3 for 4..7 }
+  Result := 2 * b - 2 + ((n shr (b - 2)) and 1);
+  if Result > 13 then Result := 13;
+end;
+
+{ 0 for 0, 1 for positive, 2 for negative }
+function Sgn3(n: Integer): Integer; inline;
+begin
+  if n = 0 then Result := 0 else if n > 0 then Result := 1 else Result := 2;
+end;
+
+function Min3(n: Integer): Integer; inline;
+begin
+  if n > 3 then Result := 3 else Result := n;
+end;
+
+function Min7(n: Integer): Integer; inline;
+begin
+  if n > 7 then Result := 7 else Result := n;
+end;
+
+{ Decide, then refined by the APM in context actx; the two averaged }
+function DecideApm(var m: TModel; b: Integer; const hs: array of Cardinal; sel, actx: Integer): Integer;
+var j, p, pa: Integer; cp: array[0..10] of PCounter;
+begin
+  for j := 0 to High(hs) do
+  begin
+    cp[j] := m.vt.At(hs[j]);
+    m.vmix.Add(St16(cp[j]^.p));
+  end;
+  m.vmix.Add(256);
+  p := m.vmix.Mix(sel);
+  pa := m.vapm.Refine(p, actx);
+  p := (p + 3 * pa) * 4;
+  if p < 1 then p := 1 else if p > 65535 then p := 65535;
+  Result := CodeP(m, b, p);
+  m.vmix.Update(Result);
+  m.vapm.Update(Result);
+  for j := 0 to High(hs) do CounterUpdate(cp[j]^, Result, V_LIMIT);
+end;
+
+{ version 4's values: each decision (zero or not, greater than k) mixes six
+  contexts: the two values before; the same value's neighbourhood in the
+  granule before; the position; the other channel's value in this
+  granule; the change of global gain; the position coarsely with the
+  neighbours. }
+function CodeValues4(var m: TModel; var v: TGranuleValues; const gi: TGranuleInfo;
+  const hd: TMpegHeader; quads, c, nCh: Integer): Boolean;
+var
+  r1, r2, i, t, cap, cls, lin, a, k, e, n, node, bit, n1, n2, pn, p0, oc, dg, pos, nbb: Integer;
+  hs: array[0..9] of Cardinal; pv, ov: ^TGranuleValues; dist, est, maxL, L: Integer;
+  place, win: TValuePlaces; mult, sf, step, ds, sa, so, sb: Integer; steps: array[0..575] of Integer;
+
+  { one decision: `id` (0 zero, 1-3 the bit length, 4-9 the bits below
+    the top one), `prefix` the bits decided so far }
+  function D(id, prefix, bitv: Integer): Integer;
+  var key: Integer;
+  begin
+    key := id * 8 + prefix;
+    hs[0] := Hash4(1, key * 8 + cls, n1, n2);
+    hs[1] := Hash4(2, key * 8 + cls, pn, nbb);
+    hs[2] := Hash3(3, key * 8 + cls, pos);
+    hs[3] := Hash4(4, key * 8 + cls, oc, Min3(n1));
+    hs[4] := Hash4(5, key * 8 + cls, dg * 16 + Min7(p0), Min3(n1));
+    hs[5] := Hash4(6, key * 8 + cls, pos shr 2, Min3(n1) * 4 + Min3(p0));
+    hs[6] := Hash4(7, key * 8 + cls, ds, Min3(p0) * 4 + Min3(n1));
+    hs[7] := Hash4(8, key * 8 + cls, sa, pos shr 3);
+    hs[8] := Hash4(9, key * 8 + cls, dist, Min3(n1) * 4 + Min3(p0));
+    hs[9] := Hash3(14, key * 8 + cls, est);
+    if id = 0 then Part(6) else Part(7);
+    Result := DecideApm(m, bitv, hs, id * 8 + cls, (id * 8 + cls) * EST_BUCKETS + est);
+  end;
+
+begin
+  Result := False;
+  Regions(gi, hd, r1, r2);
+  pv := @m.prevVals[c];
+  if (c = 1) then ov := @m.curVals[0] else ov := nil;
+  dg := gi.globalGain - m.lastGain[c];
+  if dg < -4 then dg := -4 else if dg > 4 then dg := 4;
+  Inc(dg, 4);
+  { each value's quantization step, in quarters of the scale's log2: the
+    global gain less the band's scalefactor (and the window's gain) }
+  ValuePlaces(gi, hd, place, win);
+  if gi.sfScale = 0 then mult := 2 else mult := 4;
+  for i := 0 to 575 do
+  begin
+    if place[i] >= 0 then sf := m.scf[c, place[i]] else sf := 0;
+    if (gi.preflag = 1) and ((gi.winSwitch = 0) or (gi.blockType <> 2)) and (place[i] >= 0) then
+      Inc(sf, PRETAB[place[i]]);
+    step := gi.globalGain - mult * sf;
+    if (gi.winSwitch = 1) and (gi.blockType = 2) then Dec(step, 8 * gi.subGain[win[i]]);
+    steps[i] := step;
+  end;
+  for i := 0 to 575 do
+  begin
+    if i >= 2 * gi.bigValues + 4 * quads then begin v[i] := 0; Continue; end;
+    if i < 2 * gi.bigValues then
+    begin
+      if i < r1 then t := gi.table[0]
+      else if i < r2 then t := gi.table[1]
+      else t := gi.table[2];
+      if HUFF_OFFSET[t] = -2 then Exit;
+      if HUFF_OFFSET[t] = -1 then begin v[i] := 0; Continue; end;
+      lin := LINBITS[t];
+      if lin > 0 then begin cap := 15; cls := 6; end
+      else begin
+        cap := HUFF_SIZE[t] - 1;
+        case cap of 1: cls := 0; 2: cls := 1; 3: cls := 2; 5: cls := 3; 7: cls := 4; else cls := 5; end;
+      end;
+    end
+    else begin cap := 1; cls := 7; lin := 0; end;      { count1 }
+    n1 := 0; n2 := 0;
+    if i > 0 then n1 := Cap15(Abs(v[i - 1]));
+    if i > 1 then n2 := Cap15(Abs(v[i - 2]));
+    p0 := Cap15(Abs(pv^[i]));
+    pn := 2 * p0;
+    if i > 0 then Inc(pn, Cap15(Abs(pv^[i - 1])));
+    if i < 575 then Inc(pn, Cap15(Abs(pv^[i + 1])));
+    if pn > 31 then pn := 31;
+    if ov <> nil then oc := Cap15(Abs(ov^[i])) else oc := 16;
+    pos := i shr 2;
+    nbb := NbBucket(2 * n1 + n2);
+    ds := steps[i] - m.prevStep[c, i];
+    if ds < -8 then ds := -8 else if ds > 8 then ds := 8;
+    Inc(ds, 8);
+    sa := steps[i] div 4;
+    if sa < 0 then sa := 0 else if sa > 63 then sa := 63;
+    { how far the region's end is: the big values', or the count1 part's }
+    if i < 2 * gi.bigValues then dist := 2 * gi.bigValues - i else dist := 2 * gi.bigValues + 4 * quads - i;
+    dist := BitLen(dist);
+    { the magnitude the neighbours suggest, on a log scale: the two values
+      before, the same place and its neighbours in the granule before, the
+      other channel }
+    est := 4 * n1 + 2 * n2 + 3 * p0;
+    if i > 0 then Inc(est, Cap15(Abs(pv^[i - 1])));
+    if i < 575 then Inc(est, Cap15(Abs(pv^[i + 1])));
+    if oc < 16 then Inc(est, 2 * oc);
+    est := EstBucket(est);
+    a := Abs(v[i]);
+    { zero or not; the bit length (1 to 4: up to 15) as "longer than L";
+      the bits below the top one, each knowing those above it }
+    if D(0, 0, Ord(a > 0)) = 0 then k := 0
+    else
+    begin
+      maxL := BitLen(cap);
+      L := 1;
+      while (L < maxL) and (D(L, 0, Ord(BitLen(Cap15(a)) > L)) = 1) do Inc(L);
+      k := 1;
+      for bit := L - 2 downto 0 do
+        k := k * 2 + D(4 + (L - 2) * (L - 1) div 2 + (L - 2 - bit), k, (Cap15(a) shr bit) and 1);
+      if k > cap then Exit;
+    end;
+    if (lin > 0) and (k = 15) then
+    begin
+      Part(7);
+      e := a - 15;
+      n := 0;
+      if not m.decoding then
+        while (e shr n) > 0 do Inc(n);
+      node := 1;
+      for bit := 3 downto 0 do
+        node := node * 2 + m.Bit((n shr bit) and 1, m.linLen[node], LIMIT_STRUCT);
+      n := node - 16;
+      if n > lin then Exit;
+      if n = 0 then e := 0
+      else
+      begin
+        e := 1;
+        for bit := n - 2 downto 0 do
+          e := e * 2 + m.Bit((a - 15) shr bit and 1, m.linLow[bit], LIMIT_BYTES);
+      end;
+      k := 15 + e;
+    end;
+    if k = 0 then v[i] := 0
+    else
+    begin
+      { the sign, by the other channel's at this place and the value
+        before's (each none, + or -) and the magnitude }
+      Part(8);
+      if ov = nil then so := 0 else so := Sgn3(ov^[i]);
+      if i > 0 then sb := Sgn3(v[i - 1]) else sb := 0;
+      if m.Bit(Ord(v[i] < 0), m.sign4[so, sb, Min3(k)], LIMIT_BYTES) = 1 then v[i] := -k else v[i] := k;
+    end;
+  end;
+  m.prevVals[c] := v;
+  m.curVals[c] := v;
+  m.lastGain[c] := gi.globalGain;
+  for i := 0 to 575 do m.prevStep[c, i] := steps[i];
+  Result := True;
+end;
+
+{ one scalefactor of `width` bits, most significant first: each bit mixes
+  its place, the same place in the last granule of this kind and channel
+  (ps), the scalefactor sent before it (pq) and the other channel's at the
+  same place (po) }
+function CodeScf(var m: TModel; v, width, kind, place, ps, pq, po: Integer): Integer;
+var bit, node: Integer; hs: array[0..3] of Cardinal;
+begin
+  node := 1;
+  for bit := width - 1 downto 0 do
+  begin
+    hs[0] := Hash4(10, kind * 64 + place, width, node);
+    hs[1] := Hash4(11, width * 1024 + node, ps + 1, kind);
+    hs[2] := Hash4(12, kind * 64 + place, node, pq + 1);
+    hs[3] := Hash4(13, width * 1024 + node, po + 1, ps + 1);
+    node := node * 2 + Decide(m, m.smix, (v shr bit) and 1, hs, Min7(width));
+  end;
+  Result := node - (1 shl width);
+end;
+
+{ version 4's scalefactors: read from (or written to) the slot stream at bit
+  b, p2 bits, and coded as values; m.scf[c] becomes the granule's whole set
+  (what scfsi did not send is the granule before's) }
+procedure CodeScalefactors(var m: TModel; var d: TBytes; var run: TRun; const si: TSideInfo;
+  g, c: Integer; b: Int64; p2: Integer; const hd: TMpegHeader);
+var
+  L: TScfLayout; bits: TBytes; r: TBitReader; w: TBitWriter; j, val, pq, po: Integer;
+  full: array[0..63] of Integer;
+begin
+  ScfLayout(si, g, c, hd, L);
+  for j := 0 to 63 do full[j] := m.scf[c, j];
+  if not m.decoding then
+  begin
+    bits := GetSlotBits(d, run, b, p2);
+    r.Init(bits, 0, Length(bits));
+  end;
+  w.Init(p2 div 8 + 1);
+  pq := -1;
+  for j := 0 to L.n - 1 do
+  begin
+    val := 0;
+    if L.width[j] > 0 then
+    begin
+      if not m.decoding then val := Integer(r.Get(L.width[j]));
+      if (c = 1) and (si.nCh = 2) then po := m.scf[0, L.place[j]] else po := -1;
+      val := CodeScf(m, val, L.width[j], L.kind, L.place[j], m.lastScf[c, L.kind, L.place[j]], pq, po);
+      w.Put(Cardinal(val), L.width[j]);
+    end;
+    full[L.place[j]] := val;
+    m.lastScf[c, L.kind, L.place[j]] := val;
+    pq := val;
+  end;
+  if m.decoding then PutSlotBits(d, run, b, w.d, p2);
+  for j := 0 to 63 do m.scf[c, j] := full[j];
+end;
+
 { granule g, channel c's main data, from bit b of the slot stream }
 function CodeGranule(var m: TModel; var d: TBytes; var run: TRun; const si: TSideInfo;
-  g, c: Integer; b: Int64; const hd: TMpegHeader): Boolean;
+  g, c: Integer; b: Int64; const hd: TMpegHeader; ver: Integer): Boolean;
 var
   p23, p2, p3, quads, tail, j, L: Integer; bits: TBytes; w: TBitWriter;
   v: TGranuleValues; ok: Boolean;
@@ -525,11 +881,13 @@ begin
   p2 := Part2Bits(si, g, c, hd);
   if p2 > p23 then
   begin
+    Part(5);
     CodeSlotBits(m, d, run, b, b + p23, 0);
     Exit(True);
   end;
-  { the scalefactors, as bits }
-  CodeSlotBits(m, d, run, b, b + p2, 0);
+  Part(4);
+  if ver >= 4 then CodeScalefactors(m, d, run, si, g, c, b, p2, hd)
+  else CodeSlotBits(m, d, run, b, b + p2, 0);       { as bits }
   p3 := p23 - p2;
   ok := False; quads := 0; tail := 0;
   FillChar(v, SizeOf(v), 0);
@@ -547,14 +905,20 @@ begin
           if ((w.d[j shr 3] xor bits[j shr 3]) shr (7 - (j and 7)) and 1) <> 0 then ok := False;
     end;
   end;
+  Part(0);
   if m.Bit(Ord(ok), m.modelled, LIMIT_STRUCT) = 0 then
   begin
+    Part(5);
     CodeSlotBits(m, d, run, b + p2, b + p23, 0);
     Exit(True);
   end;
   quads := CodeField(m, quads, 8, F_QUADS, m.lastQuads[c]);
   m.lastQuads[c] := quads;
-  if not CodeValues(m, v, si.gr[g, c], hd, quads, c) then Exit;
+  if ver >= 4 then
+  begin
+    if not CodeValues4(m, v, si.gr[g, c], hd, quads, c, si.nCh) then Exit;
+  end
+  else if not CodeValues(m, v, si.gr[g, c], hd, quads, c) then Exit;
   if m.decoding then
   begin
     w.Init(p3 div 8 + 1);
@@ -565,8 +929,92 @@ begin
   end
   else L := p3 - tail;
   { the tail, as bits }
+  Part(9);
   CodeSlotBits(m, d, run, b + p2 + L, b + p23, 1);
   Result := True;
+end;
+
+{ version 4: granule g, channel c's main data from bit b, and its part23,
+  which the side information did not carry: a modelled granule's is its
+  scalefactors, its values coded again and its tail; another's is given.
+  False if the stream is damaged. }
+function CodeGranule4(var m: TModel; var d: TBytes; var run: TRun; var si: TSideInfo;
+  g, c: Integer; b: Int64; const hd: TMpegHeader): Boolean;
+var
+  p23, p2, p3, quads, tail, j, L, pq: Integer; bits: TBytes; w: TBitWriter;
+  v: TGranuleValues; ok: Boolean; slotEnd: Int64;
+begin
+  Result := False;
+  slotEnd := run.slotBytes * 8;
+  p23 := si.gr[g, c].part23;
+  p2 := Part2Bits(si, g, c, hd);
+  ok := False; quads := 0; tail := 0;
+  FillChar(v, SizeOf(v), 0);
+  if not m.decoding and (p2 <= p23) then
+  begin
+    p3 := p23 - p2;
+    bits := GetSlotBits(d, run, b + p2, p3);
+    ok := DecodeValues(bits, 0, p3, si.gr[g, c], hd, v, quads, tail);
+    if ok then
+    begin
+      { it has to come back exactly, or it is kept as bits }
+      w.Init(p3 div 8 + 1);
+      ok := EncodeValues(v, quads, si.gr[g, c], hd, w) and (w.pos = p3 - tail);
+      if ok then
+        for j := 0 to p3 - tail - 1 do
+          if ((w.d[j shr 3] xor bits[j shr 3]) shr (7 - (j and 7)) and 1) <> 0 then ok := False;
+    end;
+  end;
+  Part(0);
+  if m.Bit(Ord(ok), m.modelled, LIMIT_STRUCT) = 0 then
+  begin
+    p23 := CodeField(m, p23, 12, F_PART23, m.lastPart23[c]);
+    m.lastPart23[c] := p23;
+    if b + p23 > slotEnd then Exit;
+    si.gr[g, c].part23 := p23;
+    Part(5);
+    CodeSlotBits(m, d, run, b, b + p23, 0);
+    Exit(True);
+  end;
+  if b + p2 > slotEnd then Exit;
+  Part(4);
+  CodeScalefactors(m, d, run, si, g, c, b, p2, hd);
+  { the quadruples, predicted from where the last granule's values ended }
+  pq := (m.lastQuads[c] - 2 * si.gr[g, c].bigValues) div 4;
+  if pq < 0 then pq := 0 else if pq > 255 then pq := 255;
+  quads := CodeField(m, quads, 8, F_QUADS, pq);
+  m.lastQuads[c] := 2 * si.gr[g, c].bigValues + 4 * quads;
+  if not CodeValues4(m, v, si.gr[g, c], hd, quads, c, si.nCh) then Exit;
+  w.Init(64);
+  if not EncodeValues(v, quads, si.gr[g, c], hd, w) then Exit;
+  L := Integer(w.pos);
+  { the tail's length: none, or 12 bits }
+  if m.Bit(Ord(tail = 0), m.tailNone, LIMIT_STRUCT) = 0 then
+    tail := CodeField(m, tail, 12, F_TAIL, 0)
+  else tail := 0;
+  p23 := p2 + L + tail;
+  if (p23 > 4095) or (b + p23 > slotEnd) then Exit;
+  si.gr[g, c].part23 := p23;
+  m.lastPart23[c] := p23;
+  if m.decoding then PutSlotBits(d, run, b + p2, w.d, L);
+  Part(9);
+  CodeSlotBits(m, d, run, b + p2 + L, b + p23, 1);
+  Result := True;
+end;
+
+{ a frame's CRC, once its header and side information are in d: one
+  decision when it is the one they give, else its 16 bits }
+procedure CodeCrc(var m: TModel; var d: TBytes; pos, siAt: Int64; const hd: TMpegHeader);
+var crc, stored, ok: Integer;
+begin
+  if not hd.hasCrc then Exit;
+  Part(2);
+  crc := MpegCrc(HeaderAt(d, pos), d, siAt, hd.sideInfoBytes * 8);
+  stored := (d[pos + 4] shl 8) or d[pos + 5];
+  ok := m.Bit(Ord(stored = crc), m.crcOk, LIMIT_STRUCT);
+  if ok = 1 then stored := crc
+  else stored := CodeField(m, stored, 16, F_CRC, crc);
+  d[pos + 4] := stored shr 8; d[pos + 5] := stored and $FF;
 end;
 
 { a Layer III frame's bytes after its header, the frame at pos of len bytes;
@@ -574,45 +1022,77 @@ end;
 function CodeL3Frame(var m: TModel; var d: TBytes; var run: TRun; pos, len: Int64;
   const hd: TMpegHeader; ver: Integer): Boolean;
 var
-  si: TSideInfo; siAt: Int64; w: TBytes; crc, stored, ok, i, g, c: Integer; start, stop, cum, b: Int64;
+  si: TSideInfo; siAt: Int64; w: TBytes; i, g, c, mapped: Integer; start, stop, cum, b: Int64;
 begin
   Result := False;
   if len < SlotsOffset(hd) then Exit;
   siAt := pos + 4 + 2 * Ord(hd.hasCrc);
   if m.decoding then InitSideInfo(hd, si) else ReadSideInfo(d, siAt, hd, si);
-  CodeSideInfo(m, si);
-  if m.decoding then
+  Part(2);
+  CodeSideInfo(m, si, ver < 4);
+  if ver < 4 then
   begin
-    w := WriteSideInfo(si, hd);
-    for i := 0 to hd.sideInfoBytes - 1 do d[siAt + i] := w[i];
-  end;
-  if hd.hasCrc then
-  begin
-    crc := MpegCrc(HeaderAt(d, pos), d, siAt, hd.sideInfoBytes * 8);
-    stored := (d[pos + 4] shl 8) or d[pos + 5];
-    ok := m.Bit(Ord(stored = crc), m.crcOk, LIMIT_STRUCT);
-    if ok = 1 then stored := crc
-    else stored := CodeField(m, stored, 16, F_CRC, crc);
-    d[pos + 4] := stored shr 8; d[pos + 5] := stored and $FF;
+    if m.decoding then
+    begin
+      w := WriteSideInfo(si, hd);
+      for i := 0 to hd.sideInfoBytes - 1 do d[siAt + i] := w[i];
+    end;
+    CodeCrc(m, d, pos, siAt, hd);
   end;
   cum := run.slotBytes;
   run.AddSlots(pos + SlotsOffset(hd), len - SlotsOffset(hd));
   start := (cum - si.mainDataBegin) * 8;
-  stop := start + MainDataBits(si);
-  if (start >= run.prevEnd) and (stop <= run.slotBytes * 8) then
+  if ver >= 4 then
   begin
-    CodeSlotBits(m, d, run, run.prevEnd, start, 1);
-    if ver < 3 then CodeSlotBits(m, d, run, start, stop, 0)
-    else
+    { whether the frame's main data is where its side information says;
+      the granules then give their part23 as they are coded }
+    mapped := 0;
+    if not m.decoding then
+      mapped := Ord((start >= run.prevEnd) and (start + MainDataBits(si) <= run.slotBytes * 8));
+    Part(0);
+    if m.Bit(mapped, m.mappedBit, LIMIT_STRUCT) = 1 then
     begin
+      if start < run.prevEnd then Exit;
+      Part(3);
+      CodeSlotBits(m, d, run, run.prevEnd, start, 1);
       b := start;
       for g := 0 to si.nGr - 1 do
         for c := 0 to si.nCh - 1 do
         begin
-          if not CodeGranule(m, d, run, si, g, c, b, hd) then Exit;
+          if not CodeGranule4(m, d, run, si, g, c, b, hd) then Exit;
           Inc(b, si.gr[g, c].part23);
         end;
+      run.prevEnd := b;
+    end
+    else
+      for g := 0 to si.nGr - 1 do
+        for c := 0 to si.nCh - 1 do
+        begin
+          si.gr[g, c].part23 := CodeField(m, si.gr[g, c].part23, 12, F_PART23, m.lastPart23[c]);
+          m.lastPart23[c] := si.gr[g, c].part23;
+        end;
+    if m.decoding then
+    begin
+      w := WriteSideInfo(si, hd);
+      for i := 0 to hd.sideInfoBytes - 1 do d[siAt + i] := w[i];
     end;
+    CodeCrc(m, d, pos, siAt, hd);
+    Exit(True);
+  end;
+  stop := start + MainDataBits(si);
+  if (start >= run.prevEnd) and (stop <= run.slotBytes * 8) then
+  begin
+    Part(3);
+    CodeSlotBits(m, d, run, run.prevEnd, start, 1);
+    Part(5);
+    b := start;
+    for g := 0 to si.nGr - 1 do
+      for c := 0 to si.nCh - 1 do
+      begin
+        if ver < 3 then CodeSlotBits(m, d, run, b, b + si.gr[g, c].part23, 0)
+        else if not CodeGranule(m, d, run, si, g, c, b, hd, ver) then Exit;
+        Inc(b, si.gr[g, c].part23);
+      end;
     run.prevEnd := stop;
   end;
   Result := True;
@@ -658,6 +1138,7 @@ begin
   while pos < total do
   begin
     kind := 0;
+    Part(0);
     if not m.decoding then kind := Ord(scan.segments[i].kind);
     kind := CodeKind(m, kind);
     if kind > Ord(High(TSegmentKind)) then Exit;
@@ -686,13 +1167,16 @@ begin
           goesOn := Ord((i + 1 < scan.count) and (scan.segments[i + 1].kind = skFrame)
             and DecodeHeader(HeaderAt(d, scan.segments[i + 1].offset), hn)
             and (hn.layer = 3) and SameStream(run.first, hn));
+        Part(0);
         inRun := m.Bit(goesOn, m.runGoesOn, LIMIT_STRUCT) = 1;
+        Part(3);
         if not inRun then
           CodeSlotBits(m, d, run, run.prevEnd, run.slotBytes * 8, 1);
       end
       else
       begin
         if inRun then Exit;
+        Part(1);
         CodeBytes(m, d, pos + 4, len - 4, 0);
       end;
     end
@@ -702,6 +1186,7 @@ begin
       if not m.decoding then len := scan.segments[i].length;
       len := CodeLength(m, len);
       if (len < 1) or (len > total - pos) then Exit;
+      Part(1);
       CodeBytes(m, d, pos, len, 1);
     end;
     Inc(pos, len);

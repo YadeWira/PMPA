@@ -59,10 +59,12 @@ type
   end;
 
 var
-  { trees of the 17 distinct tables }
+  { trees of the 17 distinct tables, built once when the unit starts:
+    before any thread, never written after (built on first use, two
+    threads extracting at once raced on them: an access violation, seen
+    on 01/11/2026) }
   Trees: array of TTree;
   TreeOf: array of Integer;   { a table's first entry -> its tree }
-  Built: Boolean = False;
 
 procedure BuildTree(first, count: Integer; out t: TTree);
 var e, k, node, b, nxt: Integer;
@@ -104,7 +106,6 @@ var t, first, k: Integer;
     Inc(k);
   end;
 begin
-  if Built then Exit;
   SetLength(TreeOf, Length(HUFF_LEN));
   k := 0;
   Add(COUNT1_A, 16);
@@ -117,7 +118,6 @@ begin
     if t > 24 then Continue;                    { table 24's }
     Add(first, HUFF_SIZE[t] * HUFF_SIZE[t]);
   end;
-  Built := True;
 end;
 
 function TablesComplete: Boolean;
@@ -163,7 +163,6 @@ begin
   Result := False;
   FillChar(v, SizeOf(v), 0);
   quads := 0; tail := 0;
-  BuildAll;
   if gi.bigValues * 2 > 576 then Exit;
   r.d := bits; r.pos := first; r.limit := first + nbits;
   Regions(gi, hd, r1, r2);
@@ -242,7 +241,6 @@ function EncodeValues(const v: TGranuleValues; quads: Integer; const gi: TGranul
 var r1, r2, i, t, e, x, y, ax, ay, size, lin, q, k, a: Integer;
 begin
   Result := False;
-  BuildAll;
   if (gi.bigValues * 2 > 576) or (quads < 0) or (gi.bigValues * 2 + 4 * quads > 576) then Exit;
   Regions(gi, hd, r1, r2);
   i := 0;
@@ -303,4 +301,6 @@ begin
   Result := True;
 end;
 
+initialization
+  BuildAll;
 end.

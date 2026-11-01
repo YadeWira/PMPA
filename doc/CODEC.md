@@ -65,7 +65,7 @@ headers say, not what is inside them. Measured on 01/11/2026:
 | set | files | size | `.pmpa` |
 |---|---|---|---|
 | synthetic samples (`tests/`, codec streams only) | 41 | 723,039 B | 95.11% |
-| the local corpus's files with MPEG audio | 24 | 24.8 MB | 96.74% |
+| the local corpus's files with MPEG audio | 24 | 31.4 MB | 97.02% |
 
 Every file came back byte for byte. The 18 corpus files with no MPEG audio
 frame were refused.
@@ -104,7 +104,7 @@ Measured on 01/11/2026:
 | set | files | size | version 1 | version 2 |
 |---|---|---|---|---|
 | synthetic samples (codec streams only) | 41 | 723,039 B | 95.11% | 93.73% |
-| the local corpus's files with MPEG audio | 24 | 24.8 MB | 96.74% | 94.42% |
+| the local corpus's files with MPEG audio | 24 | 31.4 MB | 97.02% | 94.18% |
 
 ## The stream, version 3: Layer III's values (`pas/pmpahuff.pas`)
 
@@ -140,8 +140,62 @@ Measured on 01/11/2026 (8 threads; with other work running):
 | set | files | size | version 2 | version 3 |
 |---|---|---|---|---|
 | synthetic samples (codec streams only) | 41 | 723,039 B | 93.73% | 92.45% |
-| the corpus's MPEG files | 24 | 24.8 MB | 94.42% | 90.99% |
-| of them, Layer III | 10 | | | 73.5% to 93.1% |
-| of them, Layer II (not modelled yet) | 13 | | | 94.5% to 98.2% |
+| the corpus's MPEG files | 24 | 31.4 MB | 94.18% | 90.39% |
 
-The corpus takes 5.8 s to compress and 5.4 s to extract.
+**A correction (01/11/2026):** the corpus figures first published for
+versions 1 to 3 (96.74%, 94.42%, 90.99% of "24.8 MB") left out a 6.5 MB
+file: its name has a space, and the awk that added up `pmpa list`'s
+output read the wrong columns. The figures above are measured again, from
+the files' sizes; `scripts/measure.sh` now measures that way, and checks
+that every file comes back.
+
+## The stream, version 4: a model that mixes (`pas/pmpamodel.pas`)
+
+Version 4 codes Layer III's values, scalefactors and part2_3_length anew.
+`pas/pmpamodel.pas` comes from PJA by way of PRA: hashed counters, a
+logistic mixer (with SSE4.1 assembly; `PMPA_NOASM=1` takes the Pascal
+path, and `run_tests.sh` checks that both make the same streams) and an
+APM, all in 32-bit integers.
+
+- **part2_3_length is not sent** for a granule whose values are modelled:
+  it is its scalefactors' bits, plus its values coded again, plus its tail,
+  whose length is sent (one decision when there is none). The side
+  information is written, and the CRC coded, once the frame's granules
+  are. A decision says whether the frame's main data is where its side
+  information puts it; the decoder checks every granule against the slot
+  stream as it goes.
+- **Scalefactors** are values: each bit mixes its place in the block
+  kind's layout, the same place in the last granule of that kind and
+  channel, the scalefactor sent before it, and the other channel's.
+- **Values**: zero or not, the bit length (up to 4: values to 15), the bits
+  below the top one, the linbits escape above 15; each decision mixes ten
+  contexts (the two values before; the same value's neighbourhood in the
+  granule before; the position, fine and coarse; the other channel's
+  value; the change of global gain; the change of the value's quantization
+  step (global gain, scalefactor, preemphasis, subblock gain); the step
+  itself; how far the region's end is; a magnitude estimate from all the
+  neighbours), then an APM in the context of the decision, the table and
+  the estimate.
+- **Signs** in the context of the other channel's sign at that place and
+  of the value before's: they were 1 bit each, they are 0.98.
+- **The count1 quadruples** in the context of where the last granule's
+  values ended.
+
+Measured with `scripts/measure.sh` on 01/11/2026 (8 threads, other work
+running), and with packMP3 3.0f (`-nc`) on the same Layer III files:
+
+| set | files | size | version 3 | version 4 | packMP3 3.0f |
+|---|---|---|---|---|---|
+| synthetic samples (codec streams only) | 41 | 723,039 B | 92.45% | 82.0% | |
+| the corpus's MPEG files | 24 | 31.4 MB | 90.39% | 87.03% | |
+| of them, Layer III | 11 | 24.2 MB | 88.4% | 84.04% | 84.36% (it stores one of them as it is) |
+| of them, Layer II (not modelled yet) | 13 | 7.2 MB | | 97.15% | |
+
+Where version 4's bits go on those 11 Layer III files (`pas/tests/bitcosts.pas`,
+built with `-dPMPA_COSTS`): magnitudes 37.8% of the input, zero flags
+20.9%, signs 19.9%, scalefactors 2.3%, the rest of the side information
+2.4%, everything else under 1%.
+
+**Speed is the price for now:** the corpus takes 31 s to compress (which
+decodes to verify) and 13 s to extract on 8 threads, one file a thread;
+packMP3 does a 6.5 MB file in 2 s. Every decision mixes ten counters.

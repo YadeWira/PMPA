@@ -35,14 +35,14 @@ end;
 var
   files: TStringList;
   totFrames, totMapped, totUnmapped, totCrc, totCrcOk, totSlotBits, totDataBits: Int64;
-  totGranules, totRegular, totBack, totPart2Over, totHuffBits, totRegularBits, totTails, totTailBits: Int64;
+  totGranules, totRegular, totBack, totPart2Over, totHuffBits, totRegularBits, totTails, totTailBits, totLayoutBad: Int64;
   irregular: TStringList;
 
 procedure OneFile(const name: string);
 var
   d, w: TBytes; S: TMpegScan; i, k: Integer; hd, first: TMpegHeader; si: TSideInfo;
   same, inRun: Boolean; slotPos, prevEnd, start, stop, b: Int64; slots, sideOk, frames, mapped: Integer;
-  slotBuf: TBytes; g, c, p2, p3, quads, tail, j: Integer; vals: TGranuleValues; bw: TBitWriter; back: Boolean;
+  slotBuf: TBytes; g, c, p2, p3, quads, tail, j, sumw: Integer; lay: TScfLayout; vals: TGranuleValues; bw: TBitWriter; back: Boolean;
 begin
   d := LoadFile(name);
   ScanMpeg(d, S);
@@ -92,6 +92,10 @@ begin
         begin
           Inc(totGranules);
           p2 := Part2Bits(si, g, c, hd);
+          ScfLayout(si, g, c, hd, lay);
+          sumw := 0;
+          for j := 0 to lay.n - 1 do Inc(sumw, lay.width[j]);
+          if sumw <> p2 then Inc(totLayoutBad);
           p3 := si.gr[g, c].part23 - p2;
           Inc(totHuffBits, Max(p3, 0));
           if p3 < 0 then Inc(totPart2Over)
@@ -134,7 +138,7 @@ begin
   cells := 0; failures := 0; quiet := False;
   totFrames := 0; totMapped := 0; totUnmapped := 0; totCrc := 0; totCrcOk := 0;
   totSlotBits := 0; totDataBits := 0;
-  totGranules := 0; totRegular := 0; totBack := 0; totPart2Over := 0; totHuffBits := 0; totRegularBits := 0; totTails := 0; totTailBits := 0;
+  totGranules := 0; totRegular := 0; totBack := 0; totPart2Over := 0; totHuffBits := 0; totRegularBits := 0; totTails := 0; totTailBits := 0; totLayoutBad := 0;
   irregular := TStringList.Create;
   files := TStringList.Create;
   for i := 1 to ParamCount do
@@ -157,6 +161,7 @@ begin
   for i := 0 to files.Count - 1 do OneFile(files[i]);
   Check(totCrc = totCrcOk, Format('CRC of %d protected frames: %d match', [totCrc, totCrcOk]));
   Check(TablesComplete, 'every Huffman table is a complete prefix code');
+  Check(totLayoutBad = 0, Format('the scalefactors'' layout adds up to part 2 in all %d granules', [totGranules]));
   same := True;
   for v := Low(TMpegVersion) to High(TMpegVersion) do
     for r := 0 to 2 do
