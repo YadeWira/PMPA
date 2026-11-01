@@ -16,6 +16,13 @@ What the `.pmpa` adds over the bare codec stream, and why:
 The codec verifies its own stream when compressing, so what the hash
 protects against is damage **after** writing: the disk, the network, a hand.
 
+## Compatibility
+
+As in the whole family: the formats (this container and the codec's
+stream) freeze at 1.0.0, not before. Until then they may change with no
+promise: a `.pmpa` made by a 0.x release may not open in a later one. From
+1.0.0 on, what is published is read for ever.
+
 ## 1. Layout
 
 ```

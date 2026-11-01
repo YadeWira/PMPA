@@ -61,7 +61,10 @@ Download the command for your platform from the [latest release][relLink]:
 Linux (x86-64, x86, arm64), macOS (Apple silicon) or Windows (x64, and x86
 from XP on). Each build is tested by CI on its own platform, and the
 Windows ones on Windows 10 and 7 too (x86 on XP as well); a `.pmpa` made on
-one opens on any other ([installing][wInstall]).
+one opens on any other ([installing][wInstall]). Until 1.0.0 the format may change:
+a `.pmpa` made by a 0.x release may not open in a later one
+([doc/FORMAT.md](doc/FORMAT.md)); keep the originals, or the release that
+made it.
 
 ```sh
 pmpa a *.mp3 --output-dir=packed   # compress many
