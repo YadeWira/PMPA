@@ -25,10 +25,10 @@ compressor. The command is described in [doc/CLI.md](doc/CLI.md), the file
 in [doc/FORMAT.md](doc/FORMAT.md), the codec in [doc/CODEC.md](doc/CODEC.md).
 
 **Status: in development.** The container and the command work end to end,
-but the codec does not model the audio data yet (Layer III's Huffman-coded
-values, Layer I and II's samples), only the structure around it: on the 24
-files with MPEG audio of a local sample corpus (24.8 MB), the `.pmpa` files
-are 94.42% of the originals (measured 01/11/2026). Built bottom-up, each layer with its tests:
+and Layer III's values are modelled (a first model), but not yet Layer I
+and II's samples: on the 24 files with MPEG audio of a local sample corpus
+(24.8 MB), the `.pmpa` files are 90.99% of the originals, Layer III files
+73.5% to 93.1% (measured 01/11/2026). Built bottom-up, each layer with its tests:
 
 | Layer | Unit | Status |
 |---|---|---|
@@ -38,7 +38,8 @@ are 94.42% of the originals (measured 01/11/2026). Built bottom-up, each layer w
 | the codec stream, version 1: the segments, frame headers predicted, bytes in order 0/1 (a scaffold) | `pas/pmpacodec.pas` | done |
 | version 2: Layer III's side information, CRC and bit reservoir | `pas/pmpal3.pas` | done |
 | the `.pmpa` container and the `pmpa` command | `pas/pmpaformat.pas`, `pas/pmpapack.pas`, `pas/pmpafs.pas`, `pas/pmpacli.pas` | done, from PJA by way of PRA |
-| Layer III's scalefactors and Huffman-coded values | | next |
+| version 3: Layer III's Huffman-coded values decoded and modelled, coded again exactly | `pas/pmpahuff.pas` | done, a first model |
+| Layer III's scalefactors, and a better model of the values | | next |
 | Layer I and II: bit allocation, scalefactors, samples | | |
 
 ## Building and testing

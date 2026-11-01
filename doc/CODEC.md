@@ -105,3 +105,43 @@ Measured on 01/11/2026:
 |---|---|---|---|---|
 | synthetic samples (codec streams only) | 41 | 723,039 B | 95.11% | 93.73% |
 | the local corpus's files with MPEG audio | 24 | 24.8 MB | 96.74% | 94.42% |
+
+## The stream, version 3: Layer III's values (`pas/pmpahuff.pas`)
+
+Each granule's main data is its scalefactors (part 2, whose length the side
+information gives) and its Huffman-coded values (part 3). Version 3 decodes
+the values and codes them instead of their bits:
+
+- the scalefactors, as bits (as in version 2);
+- one decision: the values are modelled (they decode, and coded again give
+  the same bits), or the granule's bits follow as they are;
+- how many count1 quadruples (8 bits, in the context of the last granule's);
+- each value: whether it is 0; if not, "greater than k" for k = 1, 2, ...
+  up to what its table allows; above 15 in a table with linbits, the
+  escape's bit length and bits; then the sign. The contexts are what the
+  table allows, the two values before, the same value in the granule
+  before (same channel) and where in the granule the value is;
+- the tail: what the bits hold after the last whole quadruple (a quadruple
+  cut short, or stuffing after the 576th value), as bits. The decoder knows
+  its length: what the values come to, taken from part 3's.
+
+The Huffman tables are ISO/IEC 11172-3's (Annex B, table B.7): `test_l3`
+checks that each is a complete prefix code and that every band table
+covers 576 values. Region 1 of a block with window switching starts after
+8 long bands, or 3 short bands in each window: 36 values in MPEG-1, 54 in
+MPEG-2, 108 at 8 kHz (72 for short blocks).
+
+Every granule of the samples (3,576) and of the corpus (204,850) decodes
+regularly and, coded again, gives its bits back; 596 granules of one corpus
+file and 38 of the shine sample carry a tail (1,049,048 and 11,116 bits).
+
+Measured on 01/11/2026 (8 threads; with other work running):
+
+| set | files | size | version 2 | version 3 |
+|---|---|---|---|---|
+| synthetic samples (codec streams only) | 41 | 723,039 B | 93.73% | 92.45% |
+| the corpus's MPEG files | 24 | 24.8 MB | 94.42% | 90.99% |
+| of them, Layer III | 10 | | | 73.5% to 93.1% |
+| of them, Layer II (not modelled yet) | 13 | | | 94.5% to 98.2% |
+
+The corpus takes 5.8 s to compress and 5.4 s to extract.

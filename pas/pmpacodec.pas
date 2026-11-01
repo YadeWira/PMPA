@@ -48,10 +48,10 @@ unit pmpacodec;
 
 interface
 
-uses SysUtils, pmpampeg, pmpal3;
+uses SysUtils, pmpampeg, pmpal3, pmpahuff;
 
 const
-  STREAM_VERSION = 2;
+  STREAM_VERSION = 3;
   PMPA_VERSION = '0.1.0';
 
 type
@@ -86,7 +86,13 @@ const
   F_MDB = 0; F_PRIV = 1; F_SCFSI = 2; F_PART23 = 3; F_BIGV = 4; F_GAIN = 5;
   F_SFC = 6; F_WS = 7; F_BT = 8; F_MIX = 9; F_TAB = 10; { 10, 11, 12 }
   F_SUBG = 13; F_R0 = 14; F_R1 = 15; F_PRE = 16; F_SFS = 17; F_C1 = 18; F_CRC = 19;
-  N_FIELDS = 20;
+  F_QUADS = 20;
+  N_FIELDS = 21;
+  { the values' contexts: how many of each }
+  N_CAP = 7;      { what the table allows: 1, 2, 3, 5, 7, 15, 15 and linbits }
+  N_NB = 8;       { the two values before }
+  N_PREV = 6;     { the same value in the granule before }
+  N_POS = 6;      { where in the granule }
   HIST_BITS = 12;
 
 type
@@ -105,7 +111,18 @@ type
     fields: array[0..N_FIELDS - 1, 0..511, 0..1, 0..1] of TAdaptiveBit;
     crcOk, runGoesOn: TAdaptiveBit;
     slot: array[0..1, 0..(1 shl HIST_BITS) - 1] of TAdaptiveBit;   { [0] main data, [1] filler }
+    { version 3: Layer III's Huffman-coded values }
+    modelled: TAdaptiveBit;
+    zero: array[0..N_CAP - 1, 0..N_NB - 1, 0..N_PREV - 1, 0..N_POS - 1] of TAdaptiveBit;
+    gt: array[0..N_CAP - 1, 1..15, 0..N_NB - 1, 0..N_PREV - 1] of TAdaptiveBit;
+    sign: TAdaptiveBit;
+    linLen: array[1..15] of TAdaptiveBit;      { a tree of 4 decisions }
+    linLow: array[0..12] of TAdaptiveBit;
+    c1Zero: array[0..N_NB - 1, 0..N_PREV - 1, 0..N_POS - 1] of TAdaptiveBit;
+    prevVals: array[0..1] of TGranuleValues;
+    lastQuads: array[0..1] of Integer;
     hist: Integer;
+    lastSlotBit: Int64;
     lastSi: TSideInfo;
     lastHeader: UInt32;
     lastFree: Integer;
@@ -142,7 +159,18 @@ begin
     fields[i, j, k, l].Init;
   crcOk.Init; runGoesOn.Init;
   for i := 0 to 1 do for j := 0 to (1 shl HIST_BITS) - 1 do slot[i, j].Init;
-  hist := 0;
+  hist := 0; lastSlotBit := -2;
+  modelled.Init; sign.Init;
+  for i := 0 to N_CAP - 1 do for j := 0 to N_NB - 1 do for k := 0 to N_PREV - 1 do
+  begin
+    for l := 0 to N_POS - 1 do zero[i, j, k, l].Init;
+    for l := 1 to 15 do gt[i, l, j, k].Init;
+  end;
+  for i := 1 to 15 do linLen[i].Init;
+  for i := 0 to 12 do linLow[i].Init;
+  for j := 0 to N_NB - 1 do for k := 0 to N_PREV - 1 do for l := 0 to N_POS - 1 do c1Zero[j, k, l].Init;
+  FillChar(prevVals, SizeOf(prevVals), 0);
+  lastQuads[0] := 0; lastQuads[1] := 0;
   lastSi := Default(TSideInfo);
   lastHeader := 0; lastFree := 0; prevKind := KIND_START;
 end;
@@ -318,22 +346,59 @@ begin
   m.lastSi := si;
 end;
 
+{ the byte of the file that holds byte idx of the slot stream }
+function SlotByte(var run: TRun; idx: Int64): Int64;
+var k: Integer;
+begin
+  k := run.cursor;
+  while (k > 0) and (run.cums[k] > idx) do Dec(k);
+  while (k + 1 < run.n) and (run.cums[k + 1] <= idx) do Inc(k);
+  run.cursor := k;
+  Result := run.offs[k] + idx - run.cums[k];
+end;
+
+{ n bits of the slot stream from bit a, packed from bit 0 of the result }
+function GetSlotBits(const d: TBytes; var run: TRun; a: Int64; n: Integer): TBytes;
+var j: Integer; bit: Int64;
+begin
+  Result := nil;
+  SetLength(Result, n div 8 + 1);
+  for j := 0 to n - 1 do
+  begin
+    bit := a + j;
+    if ((d[SlotByte(run, bit shr 3)] shr (7 - Integer(bit and 7))) and 1) <> 0 then
+      Result[j shr 3] := Result[j shr 3] or (1 shl (7 - (j and 7)));
+  end;
+end;
+
+{ the first n bits of src into the slot stream from bit a (whose bits are 0) }
+procedure PutSlotBits(var d: TBytes; var run: TRun; a: Int64; const src: TBytes; n: Integer);
+var j: Integer; bit, at: Int64;
+begin
+  for j := 0 to n - 1 do
+    if ((src[j shr 3] shr (7 - (j and 7))) and 1) <> 0 then
+    begin
+      bit := a + j;
+      at := SlotByte(run, bit shr 3);
+      d[at] := d[at] or (1 shl (7 - Integer(bit and 7)));
+    end;
+end;
+
 { the bits [a, b) of the run's slot stream, in the file's bytes }
 procedure CodeSlotBits(var m: TModel; var d: TBytes; var run: TRun; a, b: Int64; cls: Integer);
-var bit, idx, at: Int64; k, sh, v: Integer;
+var bit, idx, at: Int64; sh, v: Integer;
 begin
   bit := a;
   while bit < b do
   begin
     idx := bit shr 3;
-    k := run.cursor;
-    while (k + 1 < run.n) and (run.cums[k + 1] <= idx) do Inc(k);
-    run.cursor := k;
-    at := run.offs[k] + idx - run.cums[k];
+    at := SlotByte(run, idx);
     sh := 7 - Integer(bit and 7);
     v := (d[at] shr sh) and 1;
-    { the bits of this slot-stream byte so far, as an order-0 byte model }
-    if sh = 7 then m.hist := 1;
+    { the bits of this slot-stream byte so far, as an order-0 byte model;
+      afresh where the bits coded here jump (values modelled in between) }
+    if (sh = 7) or (bit <> m.lastSlotBit + 1) then m.hist := 1;
+    m.lastSlotBit := bit;
     v := m.Bit(v, m.slot[cls, m.hist], LIMIT_BYTES);
     if m.decoding and (v = 1) then d[at] := d[at] or (1 shl sh);
     m.hist := m.hist * 2 + v;
@@ -341,12 +406,175 @@ begin
   end;
 end;
 
+function NbBucket(n: Integer): Integer; inline;
+begin
+  if n < 3 then Result := n
+  else if n < 5 then Result := 3
+  else if n < 8 then Result := 4
+  else if n < 13 then Result := 5
+  else if n < 24 then Result := 6
+  else Result := 7;
+end;
+
+function PrevBucket(n: Integer): Integer; inline;
+begin
+  if n < 3 then Result := n
+  else if n < 5 then Result := 3
+  else if n < 9 then Result := 4
+  else Result := 5;
+end;
+
+function PosBucket(i: Integer): Integer; inline;
+begin
+  if i < 12 then Result := 0
+  else if i < 36 then Result := 1
+  else if i < 96 then Result := 2
+  else if i < 192 then Result := 3
+  else if i < 320 then Result := 4
+  else Result := 5;
+end;
+
+{ a granule's values (one channel), the big values with their table's
+  limit, the count1 values, zeros after; False if a table is one no
+  stream uses (4, 14) }
+function CodeValues(var m: TModel; var v: TGranuleValues; const gi: TGranuleInfo;
+  const hd: TMpegHeader; quads, c: Integer): Boolean;
+var
+  r1, r2, i, t, cap, cls, lin, a, k, nb, pp, ps, e, n, node, bit: Integer;
+begin
+  Result := False;
+  Regions(gi, hd, r1, r2);
+  for i := 0 to 575 do
+  begin
+    if i < 2 * gi.bigValues then
+    begin
+      if i < r1 then t := gi.table[0]
+      else if i < r2 then t := gi.table[1]
+      else t := gi.table[2];
+      if HUFF_OFFSET[t] = -2 then Exit;
+      if HUFF_OFFSET[t] = -1 then begin v[i] := 0; Continue; end;
+      lin := LINBITS[t];
+      if lin > 0 then begin cap := 15; cls := 6; end
+      else begin
+        cap := HUFF_SIZE[t] - 1;
+        case cap of 1: cls := 0; 2: cls := 1; 3: cls := 2; 5: cls := 3; 7: cls := 4; else cls := 5; end;
+      end;
+      nb := 0;
+      if i > 0 then nb := 2 * Abs(v[i - 1]);
+      if i > 1 then Inc(nb, Abs(v[i - 2]));
+      nb := NbBucket(nb);
+      pp := PrevBucket(Abs(m.prevVals[c][i]));
+      ps := PosBucket(i);
+      a := Abs(v[i]);
+      if m.Bit(Ord(a <> 0), m.zero[cls, nb, pp, ps], LIMIT_BYTES) = 0 then
+      begin
+        v[i] := 0;
+        Continue;
+      end;
+      k := 1;
+      while (k < cap) and (m.Bit(Ord(a > k), m.gt[cls, k, nb, pp], LIMIT_BYTES) = 1) do Inc(k);
+      if (lin > 0) and (k = 15) then
+      begin
+        { the escape: a - 15, its bit length and the bits below the top one }
+        e := a - 15;
+        n := 0;
+        if not m.decoding then
+          while (e shr n) > 0 do Inc(n);
+        node := 1;
+        for bit := 3 downto 0 do
+          node := node * 2 + m.Bit((n shr bit) and 1, m.linLen[node], LIMIT_STRUCT);
+        n := node - 16;
+        if n > lin then Exit;
+        if n = 0 then e := 0
+        else
+        begin
+          e := 1;
+          for bit := n - 2 downto 0 do
+            e := e * 2 + m.Bit((a - 15) shr bit and 1, m.linLow[bit], LIMIT_BYTES);
+        end;
+        k := 15 + e;
+      end;
+      if m.Bit(Ord(v[i] < 0), m.sign, LIMIT_BYTES) = 1 then v[i] := -k else v[i] := k;
+    end
+    else if i < 2 * gi.bigValues + 4 * quads then
+    begin
+      nb := 0;
+      if i > 0 then nb := 2 * Abs(v[i - 1]);
+      if i > 1 then Inc(nb, Abs(v[i - 2]));
+      nb := NbBucket(nb);
+      pp := PrevBucket(Abs(m.prevVals[c][i]));
+      if m.Bit(Ord(v[i] <> 0), m.c1Zero[nb, pp, PosBucket(i)], LIMIT_BYTES) = 0 then v[i] := 0
+      else if m.Bit(Ord(v[i] < 0), m.sign, LIMIT_BYTES) = 1 then v[i] := -1
+      else v[i] := 1;
+    end
+    else v[i] := 0;
+  end;
+  m.prevVals[c] := v;
+  Result := True;
+end;
+
+{ granule g, channel c's main data, from bit b of the slot stream }
+function CodeGranule(var m: TModel; var d: TBytes; var run: TRun; const si: TSideInfo;
+  g, c: Integer; b: Int64; const hd: TMpegHeader): Boolean;
+var
+  p23, p2, p3, quads, tail, j, L: Integer; bits: TBytes; w: TBitWriter;
+  v: TGranuleValues; ok: Boolean;
+begin
+  Result := False;
+  p23 := si.gr[g, c].part23;
+  p2 := Part2Bits(si, g, c, hd);
+  if p2 > p23 then
+  begin
+    CodeSlotBits(m, d, run, b, b + p23, 0);
+    Exit(True);
+  end;
+  { the scalefactors, as bits }
+  CodeSlotBits(m, d, run, b, b + p2, 0);
+  p3 := p23 - p2;
+  ok := False; quads := 0; tail := 0;
+  FillChar(v, SizeOf(v), 0);
+  if not m.decoding then
+  begin
+    bits := GetSlotBits(d, run, b + p2, p3);
+    ok := DecodeValues(bits, 0, p3, si.gr[g, c], hd, v, quads, tail);
+    if ok then
+    begin
+      { it has to come back exactly, or it is kept as bits }
+      w.Init(p3 div 8 + 1);
+      ok := EncodeValues(v, quads, si.gr[g, c], hd, w) and (w.pos = p3 - tail);
+      if ok then
+        for j := 0 to p3 - tail - 1 do
+          if ((w.d[j shr 3] xor bits[j shr 3]) shr (7 - (j and 7)) and 1) <> 0 then ok := False;
+    end;
+  end;
+  if m.Bit(Ord(ok), m.modelled, LIMIT_STRUCT) = 0 then
+  begin
+    CodeSlotBits(m, d, run, b + p2, b + p23, 0);
+    Exit(True);
+  end;
+  quads := CodeField(m, quads, 8, F_QUADS, m.lastQuads[c]);
+  m.lastQuads[c] := quads;
+  if not CodeValues(m, v, si.gr[g, c], hd, quads, c) then Exit;
+  if m.decoding then
+  begin
+    w.Init(p3 div 8 + 1);
+    if not EncodeValues(v, quads, si.gr[g, c], hd, w) then Exit;
+    L := Integer(w.pos);
+    if L > p3 then Exit;
+    PutSlotBits(d, run, b + p2, w.d, L);
+  end
+  else L := p3 - tail;
+  { the tail, as bits }
+  CodeSlotBits(m, d, run, b + p2 + L, b + p23, 1);
+  Result := True;
+end;
+
 { a Layer III frame's bytes after its header, the frame at pos of len bytes;
   False if the stream is damaged }
 function CodeL3Frame(var m: TModel; var d: TBytes; var run: TRun; pos, len: Int64;
-  const hd: TMpegHeader): Boolean;
+  const hd: TMpegHeader; ver: Integer): Boolean;
 var
-  si: TSideInfo; siAt: Int64; w: TBytes; crc, stored, ok, i: Integer; start, stop, cum: Int64;
+  si: TSideInfo; siAt: Int64; w: TBytes; crc, stored, ok, i, g, c: Integer; start, stop, cum, b: Int64;
 begin
   Result := False;
   if len < SlotsOffset(hd) then Exit;
@@ -374,7 +602,17 @@ begin
   if (start >= run.prevEnd) and (stop <= run.slotBytes * 8) then
   begin
     CodeSlotBits(m, d, run, run.prevEnd, start, 1);
-    CodeSlotBits(m, d, run, start, stop, 0);
+    if ver < 3 then CodeSlotBits(m, d, run, start, stop, 0)
+    else
+    begin
+      b := start;
+      for g := 0 to si.nGr - 1 do
+        for c := 0 to si.nCh - 1 do
+        begin
+          if not CodeGranule(m, d, run, si, g, c, b, hd) then Exit;
+          Inc(b, si.gr[g, c].part23);
+        end;
+    end;
     run.prevEnd := stop;
   end;
   Result := True;
@@ -441,7 +679,7 @@ begin
       begin
         if inRun and not SameStream(run.first, hd) then Exit;
         if not inRun then run.Start(hd);
-        if not CodeL3Frame(m, d, run, pos, len, hd) then Exit;
+        if not CodeL3Frame(m, d, run, pos, len, hd, ver) then Exit;
         { does the run go on with the next segment? }
         goesOn := 0;
         if not m.decoding then
