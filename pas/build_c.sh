@@ -41,12 +41,8 @@ mkdir -p "$OUT"
 $CC $FLAGS "$@" -c "$HERE/pmpal3c.c" -o "$OUT/pmpal3c.o"
 
 # and the vendored PJA's (pjav7c.o, pjasysc.o: the album covers' JPEGs), by
-# its own build_c.sh, with the same choice for 32-bit x86: with -march=i686
-# its SSE2 path is left out, and its SSE4.1 and AVX2 copies run only where
-# its cpuid check finds them
-ARCH=
-case "$CC $* $TARGET" in
-  *-m32*|*i686*|*i386*|*i586*) ARCH="-march=i686 -mtune=generic" ;;
-esac
+# its own build_c.sh, which since PJA 0.6.3 makes the same choice for 32-bit
+# x86 (-march=i686: its SSE2 path left out, its SSE4.1 and AVX2 copies by
+# cpuid)
 # shellcheck disable=SC2086
-sh "$HERE/../vendor/pja/pas/build_c.sh" "$OUT" $ARCH "$@"
+sh "$HERE/../vendor/pja/pas/build_c.sh" "$OUT" "$@"

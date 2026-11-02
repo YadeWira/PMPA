@@ -20,7 +20,7 @@ pas/tests/kat.txt holds test vectors of the official BLAKE3 implementation
 Vendored
 --------
 
-vendor/pja is PJA 0.6.2 (https://github.com/YadeWira/PJA, tag v0.6.2),
+vendor/pja is PJA 0.6.3 (https://github.com/YadeWira/PJA, tag v0.6.3),
 copied unmodified from its release's vendor tarball (vendor/pja/VERSION.txt
 says how): MIT (vendor/pja/LICENSE), its NOTICE in vendor/pja/NOTICE.
 PMPA uses it for the JPEG pictures of ID3v2 tags.

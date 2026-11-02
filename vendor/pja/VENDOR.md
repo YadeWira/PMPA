@@ -1,18 +1,26 @@
-# PJA 0.6.2: the zpaq-std plugin, vendored
+# PJA 0.6.3: the zpaq-std plugin, vendored
 
-PJA (https://github.com/YadeWira/PJA), tag `v0.6.2`, commit `113e1b6`:
+PJA (https://github.com/YadeWira/PJA), tag `v0.6.3`, commit `fdcfbc9`:
 only the sources the zpaq-std plugin is built from. MIT (`LICENSE`);
 `NOTICE` has the third-party notes.
 
-0.6.2 changes no stream, no ZPAQL and nothing any codec takes: the 14
-codecs are 0.6.0's. New file: `pas/pjaheap.pas`, first in the plugin's
-uses on Windows. It puts the process heap (HeapAlloc) in place of
-FreePascal 3.2.2's own, which, in a DLL, deletes its lock when the thread
-that loaded the DLL ends; a host that loads the plugin from a short-lived
-thread and then calls it from others (7-Zip's file manager did exactly
-this with libpja) would crash on the first block freed across threads.
-Nothing changes on Linux or macOS. As in 0.6.1, either clang or gcc
-builds these sources; clang is the faster.
+0.6.3 changes no stream, no ZPAQL and nothing any codec takes from a
+well-formed file: the 14 codecs are 0.6.0's. What fuzzing found, in files
+the plugin shares with the command:
+
+- `pjajls.pas`: a JPEG-LS that ends with its scan, no EOI, is refused when
+  parsed (it was taken, then failed the verification): pjals' and
+  pjalsx's detect refuses it now, before trying.
+- `pjacodec.pas`: repairing a damaged JPEG could take minutes (the filler
+  for a cut scan went back and forth); now well under a second, at worst
+  seconds, with the same files repaired.
+- `pjaheap.pas`: a size that would overflow its header is refused; with no
+  memory it still answers nil (raising a runtime error from the memory
+  manager was measured to end the host).
+- `build_c.sh`: `-march=i686` for 32-bit x86 (MSYS2's mingw32 gcc assumed
+  SSE2), the same bytes on any 686.
+
+As in 0.6.1, either clang or gcc builds these sources; clang is the faster.
 
 ## What is new in 0.6.0
 

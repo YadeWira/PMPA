@@ -1,9 +1,10 @@
-PJA 0.6.2 (tag v0.6.2, commit 30233d8), https://github.com/YadeWira/PJA,
-from the vendor tarball pja-0.6.2-zpaqstd.tar.gz of its release (sha256
-94f6fc827629b33ad3bf9d114f0b86156b916e752816fbe67c99ced4a429a4c2; the
-release's SHA256SUMS does not list it, so each of its 25 files was
-compared with the tag's: all the same), copied unmodified, as PPA vendors
-it.
+PJA 0.6.3 (tag v0.6.3, commit b7bba91), https://github.com/YadeWira/PJA,
+from the vendor tarball pja-0.6.3-zpaqstd.tar.gz of its release (sha256
+eacc0759485670e6b04a1886c0edca53f5e9139b888f416ada91e519d9971e62, as its
+SHA256SUMS says; each of its 25 files also compared with the tag's: all
+the same), copied unmodified, as PPA vendors it. 0.6.3 writes the same
+streams as 0.6.2; it repairs a damaged JPEG without taking minutes, and
+builds its C for 32-bit x86 with -march=i686.
 
 PMPA uses it for the JPEG pictures of ID3v2 tags (album covers): pjacodec.
 Compress with version 7's model, pjacodec.Decompress. MIT (LICENSE); NOTICE

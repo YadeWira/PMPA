@@ -54,11 +54,22 @@ begin
   Result := PHeader(p - HEADER)^.mark = OURS;
 end;
 
+{ no memory: nil. The runtime's callers make that EOutOfMemory, which the
+  libraries' exports catch, with nothing more to allocate; a runtime error
+  raised from here instead needs memory for its exception, fails again and
+  ends the host (measured on Windows x86 with 2 MB left: nil gives
+  PJA_E_MEMORY, as FreePascal's own heap does) }
+function Fail: Pointer;
+begin
+  Result := nil;
+end;
+
 function Take(size: PtrUInt; flags: LongWord): Pointer;
 var h: PHeader;
 begin
+  if size > High(PtrUInt) - HEADER then Exit(Fail);
   h := HeapAlloc(heap, flags, size + HEADER);
-  if h = nil then Exit(nil);
+  if h = nil then Exit(Fail);
   h^.size := size;
   h^.mark := OURS;
   Result := Pointer(h) + HEADER;
@@ -103,8 +114,9 @@ begin
   end else if p = nil then
     p := HGetMem(size)
   else if Mine(p) then begin
+    if size > High(PtrUInt) - HEADER then Exit(Fail);
     h := HeapReAlloc(heap, 0, p - HEADER, size + HEADER);
-    if h = nil then Exit(nil);
+    if h = nil then Exit(Fail);
     h^.size := size;
     p := Pointer(h) + HEADER;
   end else begin
