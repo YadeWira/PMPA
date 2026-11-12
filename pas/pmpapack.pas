@@ -17,7 +17,7 @@ unit pmpapack;
 
 interface
 
-uses SysUtils, pmpablake3, pmpaformat, pmpacodec;
+uses SysUtils, pmpablake3, pmpaformat, pmpacodec, pmpastage;
 
 type
   TPackError = (
@@ -49,8 +49,11 @@ type
   end;
 
 { The original file -> .pmpa. ext: the original's extension without the dot,
-  kept for the extracted name when the format allows it. }
-function Pack(const original: TBytes; out pmpa: TBytes; const ext: string = ''; threads: Integer = 1): TPackResult;
+  kept for the extracted name when the format allows it. verify: decode the
+  stream and compare it before it is kept (pmpa a --no-verify: False; the
+  covers' JPEGs are still checked by PJA, and x checks the hash). }
+function Pack(const original: TBytes; out pmpa: TBytes; const ext: string = ''; threads: Integer = 1;
+              verify: Boolean = True): TPackResult;
 
 { .pmpa -> the original. maxOutput: the largest original accepted. With
   ukHashMismatch, `original` holds what was decoded and `expected` the hash
@@ -82,22 +85,26 @@ begin
   Result.err := e;
 end;
 
-function Pack(const original: TBytes; out pmpa: TBytes; const ext: string; threads: Integer): TPackResult;
-var stream: TBytes; e: string; st: TEncodeStatus;
+function Pack(const original: TBytes; out pmpa: TBytes; const ext: string; threads: Integer;
+              verify: Boolean): TPackResult;
+var stream: TBytes; e: string; st: TEncodeStatus; h: THash16; was: TStage;
 begin
   e := ext;
   if not ValidExtension(e) then e := '';
   pmpa := nil;
   Result := PackFail(ukOk);
-  st := EncodeFile(original, stream, threads);
+  st := EncodeFile(original, stream, threads, verify);
   if st = esNotMpeg then begin
     Result.err := ukNotMpeg; Result.why := EncodeStatusName(st); Exit;
   end;
   Result.stored := (st <> esOk) or (Length(stream) >= Length(original));
+  was := StageEnter(stHash);
+  h := Blake3_128(original);
+  StageEnter(was);
   if Result.stored then
-    Result.fmt := WritePmpa(original, Blake3_128(original), Length(original), pmpa, True, e)
+    Result.fmt := WritePmpa(original, h, Length(original), pmpa, True, e)
   else
-    Result.fmt := WritePmpa(stream, Blake3_128(original), Length(original), pmpa, False, e);
+    Result.fmt := WritePmpa(stream, h, Length(original), pmpa, False, e);
   if not Result.fmt.Ok then begin pmpa := nil; Result.err := ukFormat; end;
 end;
 
@@ -114,11 +121,15 @@ begin
   if p.orig_size > maxOutput then Exit(PackFail(ukTooLarge));
   if p.stored then original := p.payload
   else begin
+    StageEnter(stDecode);
     Result.dec := DecodeFile(p.payload, Int64(p.orig_size), original, threads);
+    StageEnter(stNone);
     if Result.dec <> dsOk then begin original := nil; Result.err := ukCodec; Exit; end;
   end;
   if QWord(Length(original)) <> p.orig_size then begin original := nil; Exit(PackFail(ukSizeMismatch)); end;
+  StageEnter(stHash);
   actual := Blake3_128(original);
+  StageEnter(stNone);
   if not CompareMem(@actual[0], @expected[0], SizeOf(THash16)) then Result.err := ukHashMismatch;
 end;
 

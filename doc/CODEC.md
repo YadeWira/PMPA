@@ -259,6 +259,12 @@ cannot take counts at its own size: one):
 streams and the corpus (99,598 of 99,599: the one left is cut short in a
 transport stream), and every CRC matches.
 
+Corrected on 11/11/2026: packMP2's two columns are the size of what it
+wrote, not checked. Its round trip (`d`, then `p`) gives back only 18 of the
+53 Layer II streams byte for byte (34 differ, most short of their last 66
+to 672 bytes, every step exiting 0); a stream that does not come back
+counted at its own size, packMP2 0.8 with zpaq 5 makes 95.39%.
+
 ## The stream, version 6: the same models, faster
 
 Version 6 codes what version 5 does, faster:

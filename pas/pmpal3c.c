@@ -536,3 +536,19 @@ int32_t pmpac_layout(int32_t k)
     }
     return -1;
 }
+
+/* ---------- the compiler, for pmpa --version and report ---------- */
+
+#define PMPA_STR2(x) #x
+#define PMPA_STR(x) PMPA_STR2(x)
+
+const char *pmpac_compiler(void)
+{
+#if defined(__clang__)
+  return "clang " PMPA_STR(__clang_major__) "." PMPA_STR(__clang_minor__) "." PMPA_STR(__clang_patchlevel__);
+#elif defined(__GNUC__)
+  return "gcc " PMPA_STR(__GNUC__) "." PMPA_STR(__GNUC_MINOR__) "." PMPA_STR(__GNUC_PATCHLEVEL__);
+#else
+  return "unknown";
+#endif
+}

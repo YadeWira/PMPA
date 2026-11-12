@@ -19,6 +19,8 @@ interface
 
 { whether the C is in use: its layout matched, and PMPA_NOC is not 1 }
 function CInUse: Boolean;
+{ the C compiler pmpal3c.c was built with: "gcc 14.2.0", "clang 19.1.7" }
+function CCompilerName: string;
 
 implementation
 
@@ -39,6 +41,7 @@ procedure pmpac_tables(constref t: TTablesC); cdecl; external;
 function pmpac_values(var s: TValuesC): LongInt; cdecl; external;
 function pmpac_layout(k: LongInt): LongInt; cdecl; external;
 function pmpac_samples(var s: TSamplesC): LongInt; cdecl; external;
+function pmpac_compiler: PAnsiChar; cdecl; external;
 
 { n bytes of the encoder's output, as TArithEncoder.Encode writes them }
 procedure Put(ctx: Pointer; b: PByte; n: SizeInt); cdecl;
@@ -82,6 +85,11 @@ var
 function CInUse: Boolean;
 begin
   Result := inUse;
+end;
+
+function CCompilerName: string;
+begin
+  Result := StrPas(pmpac_compiler);
 end;
 
 initialization

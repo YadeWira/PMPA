@@ -18,10 +18,11 @@ protects against is damage **after** writing: the disk, the network, a hand.
 
 ## Compatibility
 
-As in the whole family: the formats (this container and the codec's
-stream) freeze at 1.0.0, not before. Until then they may change with no
-promise: a `.pmpa` made by a 0.x release may not open in a later one. From
-1.0.0 on, what is published is read for ever.
+As in the whole family: what a published release wrote is read by every
+release after it. The formats (this container and the codec's stream) are
+not frozen yet: a later release may write a new stream version, which the
+releases before it refuse cleanly (`FutureVersion`). They freeze in a 0.9.x
+release; `doc/STABILITY.md` has what is fixed and since when.
 
 ## 1. Layout
 

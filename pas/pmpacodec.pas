@@ -52,7 +52,7 @@ uses SysUtils, pmpampeg, pmpal3, pmpahuff, pmpal12;
 
 const
   STREAM_VERSION = 8;
-  PMPA_VERSION = '0.2.0';
+  PMPA_VERSION = '0.3.0';
 
 type
   TEncodeStatus = (
@@ -62,8 +62,8 @@ type
                          the caller stores the original instead }
   TDecodeStatus = (dsOk, dsEmpty, dsFutureVersion, dsBadStream, dsTooBig);
 
-{ The stream of d, verified. }
-function EncodeFile(const d: TBytes; out s: TBytes; threads: Integer = 1): TEncodeStatus;
+{ The stream of d, verified (decoded and compared) unless verify is False. }
+function EncodeFile(const d: TBytes; out s: TBytes; threads: Integer = 1; verify: Boolean = True): TEncodeStatus;
 { The file of s, at most maxOut bytes. }
 function DecodeFile(const s: TBytes; maxOut: Int64; out d: TBytes; threads: Integer = 1): TDecodeStatus;
 function EncodeStatusName(st: TEncodeStatus): string;
@@ -144,7 +144,7 @@ var
 
 implementation
 
-uses {$ifdef PMPA_COSTS} Math, {$endif} pmpaarith, pmpamodel, pmpalimits, pmpaid3, pjacodec, pjav7;
+uses {$ifdef PMPA_COSTS} Math, {$endif} pmpaarith, pmpamodel, pmpalimits, pmpaid3, pmpastage, pjacodec, pjav7;
 
 const
   LIMIT_STRUCT = 127;   { the structure (kinds, headers, lengths) is steady }
@@ -2142,13 +2142,27 @@ begin
   Result := 0;
 end;
 
-function EncodeFile(const d: TBytes; out s: TBytes; threads: Integer): TEncodeStatus;
+function EncodeFile(const d: TBytes; out s: TBytes; threads: Integer; verify: Boolean): TEncodeStatus;
 var scan: TMpegScan; back: TBytes; v: TVerifier; tid: TThreadID; same: Boolean; b: TBands;
 begin
   s := nil;
+  StageEnter(stParse);
   ScanMpeg(d, scan);
-  if scan.frames = 0 then Exit(esNotMpeg);
+  if scan.frames = 0 then begin StageEnter(stNone); Exit(esNotMpeg); end;
   PlanBands(scan, b);
+  StageEnter(stEncode);
+  if not verify then
+  begin
+    { --no-verify: the bands at once, and nothing decoded }
+    try
+      s := Encode(d, scan, STREAM_VERSION, nil, threads);
+    except
+      s := nil;
+    end;
+    StageEnter(stNone);
+    if s = nil then Exit(esNotBack);
+    Exit(esOk);
+  end;
   if (threads >= 2) and (b.n = 1) then
   begin
     { one band: the check on a second thread, as the stream comes out }
@@ -2166,6 +2180,7 @@ begin
       CloseThread(tid);
       v.live.Free;
     end;
+    StageEnter(stNone);
     same := (s <> nil) and v.ok and (Length(v.back) = Length(d))
             and CompareMem(@v.back[0], @d[0], Length(d));
     if not same then begin s := nil; Exit(esNotBack); end;
@@ -2177,10 +2192,14 @@ begin
     s := Encode(d, scan, STREAM_VERSION, nil, threads);
   except
     s := nil;
+    StageEnter(stNone);
     Exit(esNotBack);
   end;
-  if (DecodeFile(s, Length(d), back, threads) <> dsOk) or (Length(back) <> Length(d))
-     or not CompareMem(@back[0], @d[0], Length(d)) then
+  StageEnter(stVerify);
+  same := (DecodeFile(s, Length(d), back, threads) = dsOk) and (Length(back) = Length(d))
+     and CompareMem(@back[0], @d[0], Length(d));
+  StageEnter(stNone);
+  if not same then
   begin
     s := nil;
     Exit(esNotBack);

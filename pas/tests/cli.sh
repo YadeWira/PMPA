@@ -137,5 +137,240 @@ check "an unknown command: rc 2" test "$(rc "$PMPA" mix "$W/in/l2_64k_32k_mono_c
 check "no files: rc 2" test "$(rc "$PMPA" a)" -eq 2
 check "--help: rc 0" "$PMPA" --help
 
+echo "--- interrupted runs, and the disk (PJA's checks)"
+# strace with fault injection holds the write at its fsync, between a
+# complete temporary and its rename, for as long as the test needs: the
+# signal lands exactly there. Without it, the signal is sent as soon as a
+# temporary shows up (a race the write usually wins: a weaker check).
+mkdir -p "$W/sig"
+for i in $(seq 24); do cp "$W/pmpa/l3_cbr128_44k_joint.pmpa" "$W/sig/c$i.pmpa"; done
+HOLD=0
+if command -v strace > /dev/null 2>&1 &&
+   strace -f -qq -o /dev/null -e trace=fsync -e inject=fsync:delay_enter=1ms true > /dev/null 2>&1; then HOLD=1; fi
+cat > "$W/sig.py" <<'EOF'
+import glob, os, signal, subprocess, sys, time
+pmpa, d, sig, hold, ignore = sys.argv[1], sys.argv[2], getattr(signal, sys.argv[3]), sys.argv[4] == '1', sys.argv[5] == '1'
+out = os.path.join(d, 'o')
+files = sorted(glob.glob(os.path.join(d, 'c*.pmpa')))[:1 if ignore else None]
+cmd = [pmpa, 'x', '-q', '-f', '-th', '1'] + files + ['-o', out + '/']
+if hold:
+    cmd = ['strace', '-f', '-qq', '-o', '/dev/null', '-e', 'trace=fsync', '-e', 'inject=fsync:delay_enter=3s'] + cmd
+def pre():
+    signal.signal(sig, signal.SIG_IGN if ignore else signal.SIG_DFL)
+p = subprocess.Popen(cmd, preexec_fn=pre)
+def state(pid):
+    try: return open('/proc/%d/stat' % pid).read().rsplit(')', 1)[1].split()[0]
+    except (OSError, IndexError): return ''
+seen, t0 = False, time.time()
+while time.time() - t0 < 120 and p.poll() is None:
+    if glob.glob(os.path.join(out, '.pmpa-tmp-*')): seen = True; break
+    time.sleep(0.005)
+target = p.pid
+if hold and seen and p.poll() is None:
+    target = int(open('/proc/%d/task/%d/children' % (p.pid, p.pid)).read().split()[0])
+    run, t1 = 0, time.time()
+    while run < 5 and time.time() - t1 < 60 and p.poll() is None:
+        run = run + 1 if state(target) == 't' else 0
+        time.sleep(0.02)
+if p.poll() is None: os.kill(target, sig)
+rc = p.wait()
+rc = 128 - rc if rc < 0 else rc
+left = glob.glob(os.path.join(out, '.pmpa-tmp-*'))
+print(rc, 'seen' if seen else 'missed', len(left))
+EOF
+sigcheck() {   # sigcheck <signal> <rc> [ignore]: no temporary left, and the conventional rc
+  rm -rf "$W/sig/o"
+  local r; r=$(python3 -I "$W/sig.py" "$PMPA" "$W/sig" "$1" "$HOLD" "${3:-0}") || return 1
+  set -- $r "$2"
+  [ "$3" -eq 0 ] || return 1
+  if [ "$HOLD" = 1 ]; then [ "$2" = seen ] && [ "$1" -eq "$4" ]
+  else [ "$1" -eq "$4" ] || [ "$1" -eq 0 ]; fi
+}
+if [ "$HOLD" = 1 ]; then how="held at its fsync"; else how="strace not here: racy"; fi
+check "SIGINT while a temporary is written: deleted, rc 130 ($how)" sigcheck SIGINT 130
+check "SIGTERM: the same, rc 143" sigcheck SIGTERM 143
+check "SIGHUP: the same, rc 129" sigcheck SIGHUP 129
+check "SIGPIPE: the same, rc 141" sigcheck SIGPIPE 141
+if [ "$HOLD" = 1 ]; then
+  check "a SIGINT ignored by whoever started it (nohup) stays ignored: rc 0" bash -c "
+    r=\$(python3 -I '$W/sig.py' '$PMPA' '$W/sig' SIGINT 1 1) && [ \"\$r\" = '0 seen 0' ] && [ -e '$W/sig/o/c1.mp3' ]"
+  check "the data and then the directory reach the disk: fsync, rename, fsync" bash -c "
+    strace -f -qq -o '$W/sync.txt' -e trace=fsync,rename,renameat2,link '$PMPA' a -q -f '$W/in/l2_64k_32k_mono_crc.mp2' -o '$W/sync.pmpa' &&
+    grep -oE '^[0-9]+ +(fsync|rename|renameat2|link)\(' '$W/sync.txt' | sed -E 's/^[0-9]+ +//; s/renameat2|link/rename/' | tr -d '(' |
+      tr '\n' ' ' | grep -qx 'fsync rename fsync '"
+  check "the directory flush fails: rc 1, and the message says the file is there" bash -c "
+    rm -f '$W/sync4.pmpa'
+    ! strace -f -qq -o /dev/null -e trace=fsync -e inject=fsync:error=EIO:when=2 '$PMPA' a -q '$W/in/l2_64k_32k_mono_crc.mp2' -o '$W/sync4.pmpa' 2> '$W/sync4.txt' &&
+    grep -q 'sync4.pmpa: written, but its directory could not be flushed to the disk' '$W/sync4.txt' && [ -s '$W/sync4.pmpa' ]"
+  check "  the data flush fails: rc 1, nothing left, not even a temporary" bash -c "
+    rm -rf '$W/sync5'; mkdir '$W/sync5'
+    ! strace -f -qq -o /dev/null -e trace=fsync -e inject=fsync:error=EIO:when=1 '$PMPA' a -q '$W/in/l2_64k_32k_mono_crc.mp2' -o '$W/sync5/g.pmpa' 2> '$W/sync5.txt' &&
+    grep -q 'could not write it' '$W/sync5.txt' && [ -z \"\$(ls -A '$W/sync5')\" ]"
+  check "--no-sync: no fsync at all, and the file comes back" bash -c "
+    strace -f -qq -o '$W/sync3.txt' -e trace=fsync,fdatasync '$PMPA' a -q -f --no-sync '$W/in/l2_64k_32k_mono_crc.mp2' -o '$W/sync3.pmpa' &&
+    ! grep -qE 'fsync|fdatasync' '$W/sync3.txt' && '$PMPA' x -q -f '$W/sync3.pmpa' -o '$W/sync3.mp2' && cmp -s '$W/sync3.mp2' '$W/in/l2_64k_32k_mono_crc.mp2'"
+else
+  check "--no-sync: the file comes back" bash -c "
+    '$PMPA' a -q -f --no-sync '$W/in/l2_64k_32k_mono_crc.mp2' -o '$W/sync3.pmpa' && '$PMPA' x -q -f --no-sync '$W/sync3.pmpa' -o '$W/sync3.mp2' &&
+    cmp -s '$W/sync3.mp2' '$W/in/l2_64k_32k_mono_crc.mp2'"
+fi
+L="$W/left"; rm -rf "$L"; mkdir -p "$L"; cp "$W/in/l2_64k_32k_mono_crc.mp2" "$L/g.mp2"
+sh -c 'exit 0' & wait $!; DEAD=$!
+while kill -0 "$DEAD" 2> /dev/null; do DEAD=$((DEAD + 1)); done
+mk() { echo left > "$L/$1"; touch -d "${2:-2 hours ago}" "$L/$1"; }
+mk ".pmpa-tmp-$DEAD-0"; mk "g.pmpa.pmpa-tmp4"           # old, of a dead run (and of 0.2.0)
+mk ".pmpa-tmp-$DEAD-1" now                              # fresh: maybe still being written
+mk ".pmpa-tmp-$$-0"                                     # old, but its process (this shell) lives
+mk ".pmpa-tmp-$DEAD-x"                                  # not PMPA's pattern
+echo victim > "$W/left_victim"; ln -s "$W/left_victim" "$L/.pmpa-tmp-$DEAD-2"; touch -h -d '2 hours ago' "$L/.pmpa-tmp-$DEAD-2"
+check "a run that writes there names the leftovers, rc 0, deletes nothing" bash -c "
+  '$PMPA' a -q '$L/g.mp2' 2> '$W/left.txt' && grep -q 'found 2 leftover temporaries of an interrupted run' '$W/left.txt' &&
+  grep -q -- '--clean-temps' '$W/left.txt' && [ -e '$L/.pmpa-tmp-$DEAD-0' ] && [ -e '$L/g.pmpa.pmpa-tmp4' ]"
+check "--clean-temps deletes the old one of a dead pid and 0.2.0's" bash -c "
+  '$PMPA' a -q -f --clean-temps '$L/g.mp2' 2> '$W/left2.txt' && grep -q 'deleted 2 leftover temporaries' '$W/left2.txt' &&
+  [ ! -e '$L/.pmpa-tmp-$DEAD-0' ] && [ ! -e '$L/g.pmpa.pmpa-tmp4' ]"
+check "  not a fresh one, not a live process's, not another name, not a link" bash -c "
+  [ -e '$L/.pmpa-tmp-$DEAD-1' ] && [ -e '$L/.pmpa-tmp-$$-0' ] && [ -e '$L/.pmpa-tmp-$DEAD-x' ] &&
+  [ -L '$L/.pmpa-tmp-$DEAD-2' ] && [ \"\$(cat '$W/left_victim')\" = victim ]"
+check "--clean-temps with list: rc 2" test "$(rc "$PMPA" list --clean-temps "$W/g.pmpa")" -eq 2
+check "--no-verify: the same .pmpa" bash -c "
+  '$PMPA' a -q -f --no-verify '$W/in/l3_cbr128_44k_joint.mp3' -o '$W/nv.pmpa' && cmp -s '$W/nv.pmpa' '$W/pmpa/l3_cbr128_44k_joint.pmpa'"
+check "--no-verify is for a: rc 2" test "$(rc "$PMPA" x --no-verify "$W/g.pmpa")" -eq 2
+
+echo "--- version, selftest, --cpu"
+check "--version: the build, the system and the path" bash -c "
+  o=\$('$PMPA' --version) && grep -q '^pmpa ' <<< \"\$o\" && grep -q '^cpu_path: ' <<< \"\$o\" && grep -q '^stream_version: ' <<< \"\$o\""
+check "selftest: every check passed, rc 0" bash -c "'$PMPA' selftest | grep -q 'checks passed'"
+check "selftest -q: the summary alone" bash -c "[ \$('$PMPA' selftest -q | wc -l) -eq 1 ]"
+check "selftest has an older stream version, only extracted" bash -c "'$PMPA' selftest | grep -q '(version 7): '"
+PATHS=$("$PMPA" --version | sed -n 's/^cpu_paths_supported: //p')
+check "--cpu: every path here ($PATHS) gives the very same .pmpa" bash -c "
+  for p in $PATHS; do
+    '$PMPA' --cpu=\$p a -q -f '$W/in/l3_cbr128_44k_joint.mp3' '$W/in/l2_64k_32k_mono_crc.mp2' -o '$W/cpu_'\$p/ || exit 1
+    cmp -s '$W/cpu_'\$p/l3_cbr128_44k_joint.pmpa '$W/pmpa/l3_cbr128_44k_joint.pmpa' || exit 1
+    cmp -s '$W/cpu_'\$p/l2_64k_32k_mono_crc.pmpa '$W/pmpa/l2_64k_32k_mono_crc.pmpa' || exit 1
+  done"
+check "selftest --cpu=plain: that path alone" bash -c "'$PMPA' selftest --cpu=plain -q | grep -q 'on 1 path(s) (plain)'"
+check "--cpu with a path that is no path: rc 2" test "$(rc "$PMPA" --cpu=avx512 selftest)" -eq 2
+check "--cpu plain (a space): rc 2, naming --cpu=plain" bash -c "'$PMPA' selftest --cpu plain 2>&1 | grep -q 'write --cpu=plain'"
+check "selftest takes no files: rc 2" test "$(rc "$PMPA" selftest "$W/g.pmpa")" -eq 2
+
+echo "--- t"
+python3 -I -c "
+import sys; d = bytearray(open(sys.argv[1], 'rb').read()); d[-20] ^= 4; open(sys.argv[2], 'wb').write(d)" "$W/pmpa/l3_cbr128_44k_joint.pmpa" "$W/damaged.pmpa"
+check "t: OK for each that verifies, rc 0, nothing written" bash -c "
+  [ \$('$PMPA' t '$W/pmpa/l3_cbr128_44k_joint.pmpa' '$W/pmpa/l2_64k_32k_mono_crc.pmpa' | grep -c ': OK') -eq 2 ] &&
+  [ ! -e '$W/pmpa/l3_cbr128_44k_joint.mp3' ]"
+check "t with a damaged one: FAILED for it, rc 1" bash -c "
+  ! '$PMPA' t '$W/pmpa/l3_cbr128_44k_joint.pmpa' '$W/damaged.pmpa' > '$W/t.out' 2> '$W/t.err' &&
+  grep -q ': OK' '$W/t.out' && grep -q 'damaged.pmpa: FAILED' '$W/t.err'"
+check "t on an MP3: rc 1" test "$(rc "$PMPA" t "$W/in/l3_cbr128_44k_joint.mp3")" -eq 1
+check "t -o: rc 2" test "$(rc "$PMPA" t "$W/g.pmpa" -o "$W/tt/")" -eq 2
+
+echo "--- info and report"
+# an MP3 whose tags say private things: ID3v2 (a title, a comment), ID3v1, APE
+python3 -I -c "
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+def fr(i, p): return i + struct.pack('>I', len(p)) + b'\0\0' + p
+body = fr(b'TIT2', b'\x00PRIVATE-TITLE-TEXT') + fr(b'COMM', b'\x00eng\x00PRIVATE-COMMENT-TEXT')
+n = len(body); ss = bytes([(n >> 21) & 127, (n >> 14) & 127, (n >> 7) & 127, n & 127])
+v1 = b'TAG' + b'PRIVATE-V1-TITLE'.ljust(30, b'\0') + b'\0' * 94
+open(sys.argv[2], 'wb').write(b'ID3\x03\x00\x00' + ss + body + d + v1)" "$W/in/l3_cbr128_44k_joint.mp3" "$W/private.mp3"
+check "info: the streams, the tags with their sizes, what PMPA does" bash -c "
+  o=\$('$PMPA' info '$W/private.mp3') && grep -q 'MPEG-1 Layer III, 44100 Hz' <<< \"\$o\" && grep -q 'kind: id3v2\|id3v2 at 0' <<< \"\$o\" &&
+  grep -q 'metadata_bytes: ID3v2 ' <<< \"\$o\" && grep -q '  pmpa: takes it: stream version ' <<< \"\$o\""
+check "info on a .pmpa: the container, the stream, its bands, that it extracts" bash -c "
+  o=\$('$PMPA' info '$W/mixp/b.pmpa') && grep -q 'original_size: ' <<< \"\$o\" && grep -q 'bands: [2-9]' <<< \"\$o\" &&
+  grep -q 'pmpa: extracts it' <<< \"\$o\""
+check "info on a stored .pmpa: a .pmpa, not MPEG audio" bash -c "
+  '$PMPA' info '$W/st.pmpa' | grep -q 'format: .pmpa'"
+check "info on something else: refuses it, rc 0" bash -c "'$PMPA' info '$W/text.mp2' | grep -q 'pmpa: refuses it'"
+check "info on a missing file: rc 1" test "$(rc "$PMPA" info "$W/missing.mp3")" -eq 1
+mkdir -p "$W/rep"
+check "report: the system, the file's hash, its structure, what PMPA does" bash -c "
+  '$PMPA' report '$W/private.mp3' > '$W/rep/r.txt' && grep -q '^cpu_path: ' '$W/rep/r.txt' &&
+  grep -q '^blake3_128: ' '$W/rep/r.txt' && grep -q '^pmpa: takes it' '$W/rep/r.txt'"
+check "  privacy: no tag text in info, --json or report, only sizes" bash -c "
+  for c in info 'info --json' report; do '$PMPA' \$c '$W/private.mp3' | grep -q PRIVATE && exit 1; done; exit 0"
+check "  privacy: the file's name, never its folders" bash -c "
+  ! grep -q '$(basename "$W")/' '$W/rep/r.txt' && grep -q '^pmpa report private.mp3$' '$W/rep/r.txt'"
+check "  a link to a new issue, its body the report, under 6000 characters" bash -c "
+  u=\$(grep '^https://' '$W/rep/r.txt') &&
+  [[ \$u == https://github.com/YadeWira/PMPA/issues/new?template=bug_report.yml\&title=*\&body=PMPA%20bug%20report* ]] &&
+  [ \${#u} -le 6000 ] && ! grep -q PRIVATE <<< \"\$u\""
+check "report -o: the report in that file, the link on the screen" bash -c "
+  '$PMPA' report '$W/private.mp3' -o '$W/rep/out.txt' | grep -q '^https://github.com/YadeWira/PMPA/issues/new' &&
+  grep -q '^PMPA bug report' '$W/rep/out.txt'"
+check "  an existing report is not replaced: rc 1" bash -c "
+  echo keep > '$W/rep/keep.txt' && ! '$PMPA' report '$W/private.mp3' -o '$W/rep/keep.txt' 2>/dev/null &&
+  [ \"\$(cat '$W/rep/keep.txt')\" = keep ]"
+check "report --with-file: the file copied beside the report, byte for byte" bash -c "
+  '$PMPA' report --with-file '$W/private.mp3' -o '$W/rep/w.txt' > /dev/null && cmp -s '$W/private.mp3' '$W/rep/pmpa-report-private.mp3'"
+check "report with no file: the system part, rc 0" bash -c "'$PMPA' report | grep -q '^== No file'"
+check "report with two files: rc 2" test "$(rc "$PMPA" report "$W/private.mp3" "$W/g.pmpa")" -eq 2
+check "--with-file is for report: rc 2" test "$(rc "$PMPA" a --with-file "$W/private.mp3")" -eq 2
+
+echo "--- --stats and --json"
+check "a --stats -th 1: parse, encode, verify, write; and a summary" bash -c "
+  o=\$('$PMPA' a -f --stats -th 1 '$W/in/l3_cbr128_44k_joint.mp3' '$W/in/l2_64k_32k_mono_crc.mp2' -o '$W/stt/') &&
+  [ \$(grep -c '  stats: read .*parse .*encode .*verify .*write .*; 1 thread(s), 1 band(s)' <<< \"\$o\") -eq 2 ] &&
+  grep -q '^pmpa: 2 file(s), ' <<< \"\$o\""
+check "x --stats: decode and hash" bash -c "
+  '$PMPA' x -f --stats '$W/stt/l3_cbr128_44k_joint.pmpa' -o '$W/stt/' | grep -q 'stats: read .*decode .*hash .*write'"
+check "t --stats -q: the stats alone" bash -c "
+  o=\$('$PMPA' t -q --stats '$W/stt/l3_cbr128_44k_joint.pmpa') && ! grep -q OK <<< \"\$o\" && grep -q 'stats: read' <<< \"\$o\""
+check "--stats is not for list: rc 2" test "$(rc "$PMPA" list --stats "$W/g.pmpa")" -eq 2
+JS="import json, sys
+lines = sys.stdin.read().splitlines()
+objs = [json.loads(l) for l in lines]
+assert objs and 'summary' in objs[-1], objs[-1:]
+for o in objs[:-1]: assert 'file' in o and o['ok'] in (True, False)
+assert len(objs) - 1 == int(sys.argv[1]), len(objs)"
+check "a --json: a JSON object a file and a summary" bash -c "
+  '$PMPA' a -f --json --stats '$W/in/l3_cbr128_44k_joint.mp3' '$W/in/l2_64k_32k_mono_crc.mp2' '$W/text.mp2' -o '$W/js/' 2>/dev/null |
+  python3 -I -c \"\$1\" 3" _ "$JS"
+check "  with the failure as ok false and its error" bash -c "
+  '$PMPA' a -f --json '$W/text.mp2' -o '$W/js/' 2>/dev/null | head -1 |
+  python3 -I -c 'import json,sys; o=json.load(sys.stdin); assert o[\"ok\"] is False and \"not MPEG audio\" in o[\"error\"]'"
+check "x --json" bash -c "'$PMPA' x -f --json '$W'/js/*.pmpa -o '$W/js/' | python3 -I -c \"\$1\" 2" _ "$JS"
+check "t --json" bash -c "'$PMPA' t --json '$W/pmpa/l3_cbr128_44k_joint.pmpa' '$W/damaged.pmpa' 2>/dev/null | python3 -I -c \"\$1\" 2" _ "$JS"
+check "list --json" bash -c "'$PMPA' list --json '$W'/js/*.pmpa | python3 -I -c \"\$1\" 2" _ "$JS"
+check "info --json, an MP3, an MP2, a .pmpa" bash -c "
+  '$PMPA' info --json '$W/private.mp3' '$W/in/l2_64k_32k_mono_crc.mp2' '$W/g.pmpa' | python3 -I -c \"\$1\" 3" _ "$JS"
+check "--json: original_size and pmpa_size in a, x, t, list; info's stream_version" bash -c "
+  '$PMPA' a -f --json '$W/in/l2_64k_32k_mono_crc.mp2' -o '$W/jn/' | head -1 > '$W/jn.txt' &&
+  '$PMPA' x -f --json '$W/jn/l2_64k_32k_mono_crc.pmpa' -o '$W/jn/' | head -1 >> '$W/jn.txt' &&
+  '$PMPA' t --json '$W/jn/l2_64k_32k_mono_crc.pmpa' | head -1 >> '$W/jn.txt' &&
+  '$PMPA' list --json '$W/jn/l2_64k_32k_mono_crc.pmpa' | head -1 >> '$W/jn.txt' &&
+  '$PMPA' info --json '$W/in/l2_64k_32k_mono_crc.mp2' | head -1 >> '$W/jn.txt' &&
+  python3 -I -c '
+import json, sys
+o = [json.loads(l) for l in open(sys.argv[1])]
+for k in range(4): assert o[k][\"original_size\"] == 8064 and o[k][\"pmpa_size\"] > 0, o[k]
+assert o[4][\"pmpa\"][\"stream_version\"] == 8, o[4]' '$W/jn.txt'"
+check "--json is not for bench: rc 2" test "$(rc "$PMPA" bench --json "$W/g.pmpa")" -eq 2
+
+echo "--- bench"
+mkdir -p "$W/bench"; cp "$W/in/l2_64k_32k_mono_crc.mp2" "$W/g.pmpa" "$W/bench/"
+check "bench: a, a --no-verify and x, each with MB/s, rc 0" bash -c "
+  o=\$('$PMPA' bench -r 2 -th 2 '$W/bench/l2_64k_32k_mono_crc.mp2' '$W/bench/g.pmpa') && grep -q '^cpu_path: ' <<< \"\$o\" &&
+  grep -q '^  a --no-verify .* MB/s' <<< \"\$o\" && [ \$(grep -c '^  x .* MB/s' <<< \"\$o\") -eq 3 ]"
+check "  and nothing written beside the inputs" test "$(ls "$W/bench" | wc -l)" -eq 2
+check "bench -r 0: rc 2" test "$(rc "$PMPA" bench -r 0 "$W/bench/g.pmpa")" -eq 2
+check "bench on something else: rc 1" test "$(rc "$PMPA" bench "$W/text.mp2")" -eq 1
+
+echo "--- a bug in PMPA"
+cp "$W/in/l2_64k_32k_mono_crc.mp2" "$W/bug.mp2"
+check "an internal error (a range check): its own exit code, 3, and what to do" bash -c "
+  PMPA_TEST_CRASH=range '$PMPA' a -f '$W/bug.mp2' -o '$W/bug.pmpa' 2> '$W/bug.txt'; [ \$? -eq 3 ] &&
+  grep -q 'internal error: ERangeError' '$W/bug.txt' &&
+  grep -q 'This is a bug in PMPA. Please run: pmpa report .*bug.mp2 and open an issue at https://github.com/YadeWira/PMPA/issues' '$W/bug.txt'"
+check "  and nothing written" test ! -e "$W/bug.pmpa"
+check "an access violation, in a worker thread: rc 3" bash -c "
+  PMPA_TEST_CRASH=access '$PMPA' a -f -th 4 '$W/bug.mp2' '$W/in/l3_cbr128_44k_joint.mp3' -o '$W/bugs/' 2> '$W/bug2.txt'; [ \$? -eq 3 ] &&
+  grep -q 'EAccessViolation' '$W/bug2.txt' && grep -q 'This is a bug in PMPA' '$W/bug2.txt'"
+check "a file that fails as a file is not a bug: rc 1" bash -c "'$PMPA' a '$W/text.mp2' 2> '$W/nb.txt'; [ \$? -eq 1 ] && ! grep -q 'bug' '$W/nb.txt'"
+
 echo "$cells cells, $failures failures"
-[ "$failures" -eq 0 ] && [ "$cells" -ge 40 ]
+[ "$failures" -eq 0 ] && [ "$cells" -ge 110 ]

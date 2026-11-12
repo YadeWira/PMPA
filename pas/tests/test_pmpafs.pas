@@ -1,6 +1,6 @@
 { Writing the output without following links, without half-done writes and
   without leaving a file whose hash does not match under its name
-  (doc/CLI.md, "Nothing written that did not verify").
+  (doc/FORMAT.md 4.5).
 
     test_pmpafs <temp_dir>   (pmpafs_* is created and deleted inside) }
 program test_pmpafs;
@@ -59,9 +59,17 @@ begin
   if not ForceDirectories(Result) then raise Exception.Create('could not create ' + Result);
 end;
 var d, outside: string; q: RawByteString; f: TFsResult;
-    oc: TOutcome; i: Integer; foreign, hGood: THash16;
-const TEMP_DIRS: array[0..10] of string = ('verify', 'keep', 'final_outside', 'final_outside_x', 'dangling',
-        'dangling_x', 'hard', 'hard_x', 'foreign', 'corrupt_link', 'dirs');
+    oc: TOutcome; i: Integer; foreign, hGood: THash16; pid: Int64; note: RawByteString; dead: string;
+const TEMP_DIRS: array[0..13] of string = ('verify', 'keep', 'final_outside', 'final_outside_x', 'dangling',
+        'dangling_x', 'hard', 'hard_x', 'foreign', 'corrupt_link', 'dirs', 'long', 'left', 'left_clean');
+
+{ a file of `age` seconds }
+procedure PutOld(const f: string; age: Integer);
+begin
+  PutText(f, 'left');
+  if FileSetDate(f, DateTimeToFileDate(Now - age / 86400)) <> 0 then raise Exception.Create('FileSetDate ' + f);
+end;
+
 begin
   cells := 0; failures := 0;
   if ParamCount < 1 then begin Writeln('usage: test_pmpafs <temp_dir>'); Halt(2); end;
@@ -97,6 +105,7 @@ begin
   f := WriteVerified(d + '/ok.mp3', B('correct contents'), H16('correct contents'), omDelete, False, oc);
   Check(f.Ok and (oc.kind = ocVerified) and (oc.path = d + '/ok.mp3'), 'positive control: Verified');
   Check(ReadText(d + '/ok.mp3') = 'correct contents', 'the good case stays on disk');
+  Check(not Exists(d + '/' + TempName(0)), '  through a temporary, not left behind');
   foreign := H16('something else');
   f := WriteVerified(d + '/bad.mp3', B('correct contents'), foreign, omDelete, False, oc);
   Check(f.Ok and (oc.kind = ocDeleted), 'foreign hash: Deleted');
@@ -109,14 +118,14 @@ begin
 
   Writeln('--- keep_renames_and_never_leaves_the_good_name');
   d := TempDir('keep');
-  f := WriteVerified(d + '/photo.mp3', B('salvageable bytes'), foreign, omKeep, False, oc);
-  Check(f.Ok and (oc.kind = ocKept) and (ExtractFileName(oc.path) = 'photo.mp3.corrupt'), 'Kept as photo.mp3.corrupt');
-  Check(ReadText(d + '/photo.mp3.corrupt') = 'salvageable bytes', 'the bytes survive');
-  Check(not Exists(d + '/photo.mp3'), 'the good name stays free');
-  f := WriteVerified(d + '/photo.mp3', B('another try'), foreign, omKeep, False, oc);
-  Check(f.Ok and (ExtractFileName(oc.path) = 'photo.mp3.corrupt.1'), 'the second one goes to .corrupt.1');
-  Check(not Exists(d + '/photo.mp3'), 'and the good name is still free');
-  Check(ReadText(d + '/photo.mp3.corrupt') = 'salvageable bytes', 'the first .corrupt is not overwritten');
+  f := WriteVerified(d + '/song.mp3', B('salvageable bytes'), foreign, omKeep, False, oc);
+  Check(f.Ok and (oc.kind = ocKept) and (ExtractFileName(oc.path) = 'song.mp3.corrupt'), 'Kept as song.mp3.corrupt');
+  Check(ReadText(d + '/song.mp3.corrupt') = 'salvageable bytes', 'the bytes survive');
+  Check(not Exists(d + '/song.mp3'), 'the good name stays free');
+  f := WriteVerified(d + '/song.mp3', B('another try'), foreign, omKeep, False, oc);
+  Check(f.Ok and (ExtractFileName(oc.path) = 'song.mp3.corrupt.1'), 'the second one goes to .corrupt.1');
+  Check(not Exists(d + '/song.mp3'), 'and the good name is still free');
+  Check(ReadText(d + '/song.mp3.corrupt') = 'salvageable bytes', 'the first .corrupt is not overwritten');
 
   Writeln('--- without_overwrite_a_foreign_file_stays_intact');
   d := TempDir('foreign');
@@ -132,11 +141,14 @@ begin
      and (ReadText(d + '/f.mp3.corrupt') = 'bad'), '  and with keep, too: it goes to .corrupt');
   f := WriteVerified(d + '/f.mp3', B('x'), H16('x'), omDelete, True, oc);
   Check(f.Ok and (ReadText(d + '/f.mp3') = 'x'), 'with overwrite: replaces it');
-  Check(not Exists(d + '/f.mp3.pmpa-tmp0'), '  without leaving the temporary');
-  PutText(d + '/g.mp3.pmpa-tmp0', 'taken');
+  Check(not Exists(d + '/' + TempName(0)), '  without leaving the temporary');
+  PutText(d + '/' + TempName(0), 'taken');
   f := WriteVerified(d + '/g.mp3', B('y'), H16('y'), omDelete, True, oc);
-  Check(f.Ok and (ReadText(d + '/g.mp3') = 'y') and (ReadText(d + '/g.mp3.pmpa-tmp0') = 'taken'),
+  Check(f.Ok and (ReadText(d + '/g.mp3') = 'y') and (ReadText(d + '/' + TempName(0)) = 'taken'),
      '  with temporary 0 taken, it uses another and does not touch it');
+  f := WriteVerified(d + '/h.mp3', B('z'), H16('z'), omDelete, False, oc);
+  Check(f.Ok and (ReadText(d + '/h.mp3') = 'z') and (ReadText(d + '/' + TempName(0)) = 'taken')
+     and not Exists(d + '/' + TempName(1)), '  and without overwrite too');
   ForceDirectories(d + '/folder.mp3');
   f := WriteVerified(d + '/folder.mp3', B('x'), H16('x'), omDelete, True, oc);
   Check((not f.Ok) and DirectoryExists(d + '/folder.mp3'), 'over a directory, not even with overwrite: ' + f.Text);
@@ -155,7 +167,56 @@ begin
   Check(f.Ok and (ReadText(d + '/sub/rel.mp3') = 'r'), 'relative path with a directory');
   SetCurrentDir(TMP);
 
-  { --- Defects measured on 2026-10-09 in the previous Rust version. }
+  Writeln('--- the temporary name: PMPA''s own pattern, with the pid');
+  Check(IsTempName('.pmpa-tmp-123-0', pid) and (pid = 123), '.pmpa-tmp-123-0: pid 123');
+  Check(IsTempName('.pmpa-tmp-4294967295-999', pid) and (pid = 4294967295), '  the largest pid, the last try');
+  Check(IsTempName('song.mp3.pmpa-tmp7', pid) and (pid = 0), 'song.mp3.pmpa-tmp7 (0.2.0 and earlier): no pid');
+  Check(IsTempName(TempName(5), pid) and (pid = GetProcessID), 'TempName carries this process''s pid');
+  Check(not IsTempName('.pmpa-tmp', pid) and not IsTempName('.pmpa-tmp-12', pid) and not IsTempName('.pmpa-tmp-1-', pid)
+     and not IsTempName('.pmpa-tmp-01-0', pid) and not IsTempName('.pmpa-tmp-1-1000', pid)
+     and not IsTempName('.pmpa-tmp-0-0', pid) and not IsTempName('.pmpa-tmp-1-0x', pid) and not IsTempName('x.pmpa-tmp-1-0', pid)
+     and not IsTempName('.pmpa-tmp1234', pid) and not IsTempName('.pmpa-tmp7', pid)
+     and not IsTempName('a.pmpa-tmp1234', pid) and not IsTempName('a.pmpa-tmp.pmpa-tmp1', pid) and not IsTempName('.pmpa-tmp-a-0', pid) and not IsTempName('.pmpa-tmp-99999999999-0', pid),
+     'anything else is not one');
+
+  Writeln('--- leftovers of an interrupted run: noticed, deleted only when asked');
+  { 4294967295 is no process's pid, here or on Windows }
+  dead := '.pmpa-tmp-4294967295-';
+  d := TempDir('left');
+  PutOld(d + '/' + dead + '0', 2 * LEFTOVER_AGE);
+  PutOld(d + '/' + dead + '1', 60);                         { fresh: may still be written }
+  PutOld(d + '/' + TempName(9), 2 * LEFTOVER_AGE);          { a live process's: this one }
+  PutOld(d + '/.pmpa-tmp-x', 2 * LEFTOVER_AGE);               { not the pattern }
+  note := CheckLeftovers(d + '/out.mp3', False);
+  Check(Pos('found 1 leftover temporary', note) > 0, 'one found: ' + note);
+  Check(Exists(d + '/' + dead + '0'), '  and without asking, nothing deleted');
+  Check(CheckLeftovers(d + '/other.mp3', False) = '', '  each directory once per run');
+  d := TempDir('left_clean');
+  PutOld(d + '/' + dead + '0', 2 * LEFTOVER_AGE);
+  PutOld(d + '/song.mp3.pmpa-tmp3', 2 * LEFTOVER_AGE);
+  PutOld(d + '/' + dead + '1', 60);
+  PutOld(d + '/' + TempName(9), 2 * LEFTOVER_AGE);
+  PutOld(d + '/.pmpa-tmp-x', 2 * LEFTOVER_AGE);
+  ForceDirectories(d + '/' + dead + '2');
+  FileSetDate(d + '/' + dead + '2', DateTimeToFileDate(Now - 2 * LEFTOVER_AGE / 86400));
+  {$ifndef MSWINDOWS}
+  PutText(d + '/victim', 'kept');
+  MakeLink(d + '/victim', d + '/' + dead + '3');
+  { pid 1 is alive (init; in a container it may be pmpa itself) }
+  PutOld(d + '/.pmpa-tmp-1-0', 2 * LEFTOVER_AGE);
+  {$endif}
+  note := CheckLeftovers(d + '/out.mp3', True);
+  Check(Pos('deleted 2 leftover temporaries', note) > 0, 'asked: an old one of a dead pid and an old-pattern one: ' + note);
+  Check(not Exists(d + '/' + dead + '0') and not Exists(d + '/song.mp3.pmpa-tmp3'), '  both gone');
+  Check(Exists(d + '/' + dead + '1') and Exists(d + '/' + TempName(9)) and Exists(d + '/.pmpa-tmp-x'),
+     '  a fresh one, a live process''s and another name stay');
+  Check(DirectoryExists(d + '/' + dead + '2'), '  a directory with the name stays');
+  {$ifndef MSWINDOWS}
+  Check(IsLink(d + '/' + dead + '3') and (ReadText(d + '/victim') = 'kept'), '  a link with the name stays, its target too');
+  Check(Exists(d + '/.pmpa-tmp-1-0'), '  nor one of pid 1, which is alive');
+  {$endif}
+
+  { --- Defects measured on 2026-10-09 in PJA's previous Rust version. }
   {$ifndef MSWINDOWS}
   Writeln('--- final_link_pointing_outside_is_not_followed_when_overwriting');
   d := TempDir('final_outside'); outside := TempDir('final_outside_x');
@@ -185,6 +246,18 @@ begin
   Check(f.Ok, 'writes');
   Check(ReadText(outside + '/victim.txt') = 'original', 'outside intact');
 
+  Writeln('--- a name near NAME_MAX: the temporary is short, not <name>.pmpa-tmpN');
+  d := TempDir('long');
+  q := StringOfChar('n', 250) + '.mp3';
+  f := WriteVerified(d + '/' + q, B('l'), H16('l'), omDelete, False, oc);
+  Check(f.Ok and (ReadText(d + '/' + q) = 'l'), 'without overwrite: ' + f.Text);
+  f := WriteVerified(d + '/' + q, B('m'), H16('m'), omDelete, True, oc);
+  Check(f.Ok and (ReadText(d + '/' + q) = 'm'), 'with overwrite: ' + f.Text);
+  f := WriteVerified(d + '/' + q, B('k'), H16('other'), omKeep, False, oc);
+  Check(f.Ok and (oc.kind = ocKept) and (oc.path = d + '/pmpa.corrupt') and (ReadText(d + '/pmpa.corrupt') = 'k'),
+     'keep: <name>.corrupt is too long, pmpa.corrupt beside it');
+  Check(not Exists(d + '/' + TempName(0)), 'no temporary left');
+
   Writeln('--- corrupt_name_taken_by_a_dangling_link');
   d := TempDir('corrupt_link');
   MakeLink(d + '/does_not_exist', d + '/g.mp3.corrupt');
@@ -198,6 +271,6 @@ begin
 
   Writeln;
   Writeln(cells, ' cells, ', failures, ' failures');
-  {$ifdef MSWINDOWS} if (failures > 0) or (cells < 30) then Halt(1);
-  {$else} if (failures > 0) or (cells < 39) then Halt(1); {$endif}
+  {$ifdef MSWINDOWS} if (failures > 0) or (cells < 44) then Halt(1);
+  {$else} if (failures > 0) or (cells < 62) then Halt(1); {$endif}
 end.

@@ -44,9 +44,14 @@ echo "the C and the Pascal: the same streams"
 "$OUT/t/test_format$EXE" $SAMPLES | tail -1
 
 echo "== the command"
+# the commit, for --version and report (release.yml sets it from the tag)
+if [ -z "${PMPA_COMMIT:-}" ]; then PMPA_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || true); fi
+export PMPA_COMMIT
 $FPC -O3 -dPMPA_FAST -dPJA_FAST -Fupas -Fipas -Fuvendor/pja/pas -Fivendor/pja/pas -Fo"$OUT/c" -FU"$OUT/u" -o"$OUT/pmpa$EXE" pas/pmpacli.pas > "$OUT/fpc.log" 2>&1 \
   || { cat "$OUT/fpc.log"; exit 1; }
 "$OUT/pmpa$EXE" --version
+# the samples inside the binary, on every SIMD path here
+"$OUT/pmpa$EXE" selftest -q
 "$OUT/pmpa$EXE" a -q --output-dir="$OUT/p" tests/mp1/* tests/mp2/* tests/mp3/* tests/covers/*
 "$OUT/pmpa$EXE" x -q --output-dir="$OUT/x" "$OUT"/p/*.pmpa
 n=0

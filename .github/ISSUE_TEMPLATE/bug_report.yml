@@ -1,0 +1,54 @@
+name: Bug report
+description: Something PMPA did wrong, refused, or crashed on
+title: "pmpa: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The quickest way to a fix is the output of
+        `pmpa report FILE` (on the file it happened with): it has PMPA's build, the
+        system and the file's structure, and **not** the audio, its tags'
+        contents or folder names. `pmpa report` prints a link that opens this form
+        with the report filled in below.
+  - type: textarea
+    id: body
+    attributes:
+      label: The output of pmpa report
+      description: Run `pmpa report FILE` (or `pmpa report` without a file) and paste all of it.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you ran
+      description: The exact command line(s), and what it printed.
+      placeholder: |
+        pmpa a song.mp3
+        pmpa: song.mp3: ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: file
+    attributes:
+      label: The file (if you can share it)
+      description: |
+        `pmpa report --with-file FILE` puts a copy beside the report. GitHub does not take
+        audio: zip it first. Only attach what you are free to share.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: "`pmpa selftest` passes on this machine (if it fails, say so above)"
+          required: false
