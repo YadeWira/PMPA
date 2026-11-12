@@ -104,6 +104,20 @@ check "  kept as h.mp2.corrupt, not as h.mp2" bash -c "[ -e '$W/h.mp2.corrupt' ]
 python3 -I -c "
 import sys; d = bytearray(open(sys.argv[1], 'rb').read()); d[-20] ^= 4; open(sys.argv[2], 'wb').write(d)" "$W/g.pmpa" "$W/p.pmpa"
 check "one bit in the stream: rc 1, nothing written" bash -c "! '$PMPA' x '$W/p.pmpa' 2>/dev/null && [ ! -e '$W/p.mp2' ]"
+# a damaged declared size (issue #1): larger, and smaller, than the stream's
+python3 -I -c "
+import struct, sys
+d = bytearray(open(sys.argv[1], 'rb').read()); n = struct.unpack_from('<Q', d, 8)[0]
+for name, v in (('sz_big', n + 1000), ('sz_small', n - 1000)):
+    e = bytearray(d); struct.pack_into('<Q', e, 8, v); open(sys.argv[2] + '/' + name + '.pmpa', 'wb').write(e)" "$W/g.pmpa" "$W"
+check "a .pmpa whose declared size is too large: rc 1, nothing written" bash -c "
+  ! '$PMPA' x '$W/sz_big.pmpa' 2>/dev/null && [ ! -e '$W/sz_big.mp2' ]"
+check "  with --keep-corrupt: kept as sz_big.mp2.corrupt (issue #1)" bash -c "
+  ! '$PMPA' x --keep-corrupt '$W/sz_big.pmpa' 2>/dev/null && [ ! -e '$W/sz_big.mp2' ] &&
+  cmp -s '$W/sz_big.mp2.corrupt' '$W/in/l2_64k_32k_mono_crc.mp2'"
+check "  too small: kept as well, all the stream gives" bash -c "
+  ! '$PMPA' x --keep-corrupt '$W/sz_small.pmpa' 2>/dev/null && [ ! -e '$W/sz_small.mp2' ] &&
+  cmp -s '$W/sz_small.mp2.corrupt' '$W/in/l2_64k_32k_mono_crc.mp2'"
 check "--max-output below the original: refused" test "$(rc "$PMPA" x --max-output=100 "$W/g.pmpa" -o "$W/m.mp2")" -eq 1
 check "  nothing written" test ! -e "$W/m.mp2"
 check "--max-output=8K is enough for an 8064-byte original" "$PMPA" x -q --max-output=8K "$W/g.pmpa" -o "$W/m.mp2"
@@ -373,4 +387,4 @@ check "an access violation, in a worker thread: rc 3" bash -c "
 check "a file that fails as a file is not a bug: rc 1" bash -c "'$PMPA' a '$W/text.mp2' 2> '$W/nb.txt'; [ \$? -eq 1 ] && ! grep -q 'bug' '$W/nb.txt'"
 
 echo "$cells cells, $failures failures"
-[ "$failures" -eq 0 ] && [ "$cells" -ge 110 ]
+[ "$failures" -eq 0 ] && [ "$cells" -ge 115 ]

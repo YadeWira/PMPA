@@ -825,10 +825,19 @@ begin
   if r.err = ukTooLarge then begin
     Fail(f + ': the original is larger than --max-output'); Exit;
   end;
-  if not (r.Ok or (r.err = ukHashMismatch)) then begin Fail(f + ': ' + r.Text); Exit; end;
+  { a size that does not match is kept only with --keep-corrupt (issue
+    #1); without it, it fails here, as before }
+  if (r.err = ukSizeMismatch) and (not keepCorrupt or (orig = nil)) then begin Fail(f + ': ' + r.Text); Exit; end;
+  if not (r.Ok or (r.err = ukHashMismatch) or (r.err = ukSizeMismatch)) then begin Fail(f + ': ' + r.Text); Exit; end;
   { -n does everything but write: a hash that does not match fails it as
     it fails x (Save, which -n stops before, is where x finds it) }
-  if dryRun and (r.err = ukHashMismatch) then begin Fail(f + ': does not verify (' + r.Text + ')'); Exit; end;
+  if dryRun and (r.err in [ukHashMismatch, ukSizeMismatch]) then begin Fail(f + ': does not verify (' + r.Text + ')'); Exit; end;
+  { a size that does not match never verifies, even if its bytes have the
+    hash: Save keeps it as NAME.corrupt }
+  if r.err = ukSizeMismatch then begin
+    h := Blake3_128(orig);
+    h[0] := h[0] xor 1;
+  end;
   { the original's own extension; without one, by the content }
   if r.ext <> '' then ext := '.' + r.ext else ext := ExtensionOf(orig);
   path := OutputPath(f, ChangeFileExt(ExtractFileName(f), ext));

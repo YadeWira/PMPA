@@ -17,7 +17,7 @@ unit pmpapack;
 
 interface
 
-uses SysUtils, pmpablake3, pmpaformat, pmpacodec, pmpastage;
+uses SysUtils, pmpablake3, pmpaformat, pmpacodec, pmpastage, pmpalimits;
 
 type
   TPackError = (
@@ -57,7 +57,9 @@ function Pack(const original: TBytes; out pmpa: TBytes; const ext: string = ''; 
 
 { .pmpa -> the original. maxOutput: the largest original accepted. With
   ukHashMismatch, `original` holds what was decoded and `expected` the hash
-  it should have had; with any other error it is empty. }
+  it should have had; with ukSizeMismatch, what was decoded, whose length
+  is not the one the .pmpa declares (for x --keep-corrupt); with any other
+  error it is empty. }
 function Unpack(const pmpa: TBytes; maxOutput: QWord; out original: TBytes; out expected: THash16; threads: Integer = 1): TPackResult;
 
 implementation
@@ -109,7 +111,7 @@ begin
 end;
 
 function Unpack(const pmpa: TBytes; maxOutput: QWord; out original: TBytes; out expected: THash16; threads: Integer = 1): TPackResult;
-var p: TPmpa; actual: THash16;
+var p: TPmpa; actual: THash16; cap: QWord;
 begin
   original := nil;
   FillChar(expected, SizeOf(expected), 0);
@@ -123,10 +125,27 @@ begin
   else begin
     StageEnter(stDecode);
     Result.dec := DecodeFile(p.payload, Int64(p.orig_size), original, threads);
+    { the stream holds more than the declared size: a damaged size (issue
+      #1). Decoded again with the caps a size would have had (the user's
+      --max-output, and the format's ratio to the payload), so that
+      --keep-corrupt has what the stream gives; it is a size mismatch. }
+    if Result.dec = dsTooBig then
+    begin
+      cap := QWord(Length(p.payload)) * MAX_EXPANSION_RATIO;
+      if cap > maxOutput then cap := maxOutput;
+      if cap > QWord(High(Int64)) then cap := QWord(High(Int64));
+      Result.dec := DecodeFile(p.payload, Int64(cap), original, threads);
+      if Result.dec = dsOk then
+      begin
+        StageEnter(stNone);
+        Result.err := ukSizeMismatch;
+        Exit;
+      end;
+    end;
     StageEnter(stNone);
     if Result.dec <> dsOk then begin original := nil; Result.err := ukCodec; Exit; end;
   end;
-  if QWord(Length(original)) <> p.orig_size then begin original := nil; Exit(PackFail(ukSizeMismatch)); end;
+  if QWord(Length(original)) <> p.orig_size then begin Result.err := ukSizeMismatch; Exit; end;
   StageEnter(stHash);
   actual := Blake3_128(original);
   StageEnter(stNone);

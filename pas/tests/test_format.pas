@@ -114,7 +114,11 @@ begin
      'one bit of the hash: HashMismatch, with the decoded and the expected');
   other := Copy(b, 0, Length(b)); other[8] := other[8] xor 1;
   pr := Unpack(other, High(QWord), back, hx);
-  Check((not pr.Ok) and (Length(back) = 0), 'orig_size one off: ' + pr.Text + ', nothing');
+  { what the stream gives, for x --keep-corrupt (issue #1), never ok }
+  Check((pr.err = ukSizeMismatch) and Same(back, orig), 'orig_size one off: ' + pr.Text + ', the stream''s bytes');
+  other := Copy(b, 0, Length(b)); other[8] := other[8] xor 4; other[9] := other[9] xor 1;
+  pr := Unpack(other, High(QWord), back, hx);
+  Check((pr.err = ukSizeMismatch) and Same(back, orig), 'orig_size off the other way: ' + pr.Text + ', the same');
 
   Writeln('--- header: each error with its name');
   for n := 0 to HEADER_SIZE - 1 do
