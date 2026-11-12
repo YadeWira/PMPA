@@ -454,3 +454,20 @@ on the 55 of those files whose cover is a JPEG (`packMP3 a -p`, covers on;
 it fails on 4 of them, cut at 1 MB, which count at their own size):
 packMP3 82.49%, PMPA 0.1.0 84.51%, PMPA 0.2.0 (version 8) 79.60%; on the 51
 packMP3 takes, 81.37%, 84.48% and 79.38%.
+
+## The stream, version 9: PJA 0.9.8 (11/11/2026)
+
+Version 9 is version 8's layout, word for word: only who wrote the
+pictures' PJA streams changes. PMPA 0.4.0 vendors PJA 0.9.8 in place of
+0.6.3, for its fixes and for `pjamodel.SetSimd`, which lets `pmpa --cpu`
+reach the covers' model (`plain`, `sse41`, `avx2`).
+
+On the 55 real covers of the set above, 0.9.8 writes the very bytes 0.6.3
+did (79.60%, the same `.pmpa` files). But on one of `tests/covers`, a JPEG
+cut short (`v23_jpeg_cut_short.mp3`), 0.9.8 writes a stream PJA 0.6.3 cannot
+read (25,939 -> 23,410 B): a PMPA 0.3 would have taken it for a damaged
+stream. Hence a new version number, so that a release before 0.4.0
+refuses a version 9 stream as a later version (`FutureVersion`), never
+as damage. Version 8 streams, as 0.2 and 0.3 wrote them, are read as they
+were: PJA 0.9.8 reads 0.6.x's streams (`pmpa selftest` extracts a version 8
+`.pmpa` written by 0.3.x, `pas/tests/selftest_v8.pmpa`).

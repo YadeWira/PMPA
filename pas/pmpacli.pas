@@ -245,7 +245,7 @@ begin
   Writeln('  --stats              a, x, t: where each file''s time went, threads and bands');
   Writeln('  --json               a, x, t, info, list: a JSON object per file, then a summary');
   Writeln('  -r N                 bench: runs of each, the best counts (default 3)');
-  Writeln('  --cpu=PATH           the model''s SIMD path: plain or sse41 (same output)');
+  Writeln('  --cpu=PATH           the models'' SIMD path: plain, sse41 or avx2 (same output)');
   Writeln('  --                   the rest are files');
   Writeln;
   Writeln('exit status: 0 all went through, 1 a file failed, 2 usage error, 3 a bug in PMPA');
@@ -301,7 +301,7 @@ end;
 procedure CpuSpaced(next: Integer);
 begin
   if next <= ArgCount then UsageError('"--cpu ' + args[next] + '": write --cpu=' + args[next])
-  else UsageError('--cpu needs a path: --cpu=plain or --cpu=sse41');
+  else UsageError('--cpu needs a path: --cpu=plain, --cpu=sse41 or --cpu=avx2');
 end;
 
 procedure ParseArgs;
@@ -328,7 +328,7 @@ begin
   i := 1;
   while (i < ArgCount) and (Copy(args[i], 1, 6) = '--cpu=') do begin
     if not ParseCpuPath(Copy(args[i], 7, MaxInt), cpuWanted) then
-      UsageError('--cpu: plain or sse41, not "' + Copy(args[i], 7, MaxInt) + '"');
+      UsageError('--cpu: plain, sse41 or avx2, not "' + Copy(args[i], 7, MaxInt) + '"');
     cpuGiven := True;
     Inc(i);
   end;
@@ -372,7 +372,7 @@ begin
     else if a = '--with-file' then withFile := True
     else if Copy(a, 1, 6) = '--cpu=' then begin
       if not ParseCpuPath(Copy(a, 7, MaxInt), cpuWanted) then
-        UsageError('--cpu: plain or sse41, not "' + Copy(a, 7, MaxInt) + '"');
+        UsageError('--cpu: plain, sse41 or avx2, not "' + Copy(a, 7, MaxInt) + '"');
       cpuGiven := True;
     end else if a = '-r' then begin
       v := NextValue;

@@ -40,7 +40,8 @@ mkdir -p "$OUT"
 # shellcheck disable=SC2086
 $CC $FLAGS "$@" -c "$HERE/pmpal3c.c" -o "$OUT/pmpal3c.o"
 
-# and the vendored PJA's (pjav7c.o, pjasysc.o: the album covers' JPEGs), by
+# and the vendored PJA's (pjav7c.o, pjasysc.o: the album covers' JPEGs; since
+# PJA 0.9.x its JPEG 2000 C too, which pjacodec links and PMPA never calls), by
 # its own build_c.sh, which since PJA 0.6.3 makes the same choice for 32-bit
 # x86 (-march=i686: its SSE2 path left out, its SSE4.1 and AVX2 copies by
 # cpuid)

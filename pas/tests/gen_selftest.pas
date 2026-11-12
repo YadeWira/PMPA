@@ -2,8 +2,10 @@
   each one has to give. The samples are the start of synthetic files in
   tests/ (scripts/mksamples.py made them): a Layer I, a Layer II and a
   Layer III file with CRCs, a Layer III file whose ID3v2 tag holds a JPEG
-  (through PJA), and the Layer III one again as stream version 7 (0.1.0's,
-  before the covers), which selftest only extracts.
+  (through PJA), the Layer III one again as stream version 7 (0.1.0's,
+  before the covers), and the cover one as stream version 8, the very
+  .pmpa 0.3.x wrote (pas/tests/selftest_v8.pmpa, its covers through PJA
+  0.6.3): the last two selftest only extracts.
 
     gen_selftest <tests dir> <out .inc>
 
@@ -18,15 +20,18 @@ type
     name, path, ext: string;
     cut: Integer;        { bytes kept after the first frame; 0: all }
     ver: Integer;        { the stream version; 0: what Pack writes }
+    fixed: string;       { a .pmpa kept as an older release wrote it ('' none) }
   end;
 
 const
-  SAMPLES: array[0..4] of TSample = (
-    (name: 'l1_64k_32k_mono_crc.mp1'; path: 'mp1/l1_64k_32k_mono_crc.mp1'; ext: 'mp1'; cut: 3072; ver: 0),
-    (name: 'l2_64k_32k_mono_crc.mp2'; path: 'mp2/l2_64k_32k_mono_crc.mp2'; ext: 'mp2'; cut: 3072; ver: 0),
-    (name: 'l3_mpeg25_32k_12k_crc.mp3'; path: 'mp3/l3_mpeg25_32k_12k_crc.mp3'; ext: 'mp3'; cut: 3072; ver: 0),
-    (name: 'v23_tag_unsync_every_ff.mp3'; path: 'covers/v23_tag_unsync_every_ff.mp3'; ext: 'mp3'; cut: 3072; ver: 0),
-    (name: 'l3_mpeg25_32k_12k_crc.mp3 (version 7)'; path: 'mp3/l3_mpeg25_32k_12k_crc.mp3'; ext: 'mp3'; cut: 3072; ver: 7));
+  SAMPLES: array[0..5] of TSample = (
+    (name: 'l1_64k_32k_mono_crc.mp1'; path: 'mp1/l1_64k_32k_mono_crc.mp1'; ext: 'mp1'; cut: 3072; ver: 0; fixed: ''),
+    (name: 'l2_64k_32k_mono_crc.mp2'; path: 'mp2/l2_64k_32k_mono_crc.mp2'; ext: 'mp2'; cut: 3072; ver: 0; fixed: ''),
+    (name: 'l3_mpeg25_32k_12k_crc.mp3'; path: 'mp3/l3_mpeg25_32k_12k_crc.mp3'; ext: 'mp3'; cut: 3072; ver: 0; fixed: ''),
+    (name: 'v23_tag_unsync_every_ff.mp3'; path: 'covers/v23_tag_unsync_every_ff.mp3'; ext: 'mp3'; cut: 3072; ver: 0; fixed: ''),
+    (name: 'l3_mpeg25_32k_12k_crc.mp3 (version 7)'; path: 'mp3/l3_mpeg25_32k_12k_crc.mp3'; ext: 'mp3'; cut: 3072; ver: 7; fixed: ''),
+    (name: 'v23_tag_unsync_every_ff.mp3 (version 8)'; path: 'covers/v23_tag_unsync_every_ff.mp3'; ext: 'mp3'; cut: 3072; ver: 8;
+     fixed: '../pas/tests/selftest_v8.pmpa'));
 
 function LoadFile(const f: string): TBytes;
 var s: TFileStream;
@@ -81,7 +86,9 @@ begin
     if SAMPLES[k].ver = 0 then begin
       r := Pack(d, p, SAMPLES[k].ext, 1);
       if not r.Ok or r.stored then begin Writeln('gen_selftest: ', SAMPLES[k].name, ': ', r.Text); Halt(1); end;
-    end else begin
+    end else if SAMPLES[k].fixed <> '' then
+      p := LoadFile(IncludeTrailingPathDelimiter(ParamStr(1)) + SAMPLES[k].fixed)
+    else begin
       s := EncodeAs(d, SAMPLES[k].ver);
       f := WritePmpa(s, Blake3_128(d), Length(d), p, False, SAMPLES[k].ext);
       if not f.Ok then begin Writeln('gen_selftest: ', SAMPLES[k].name, ': ', f.Text); Halt(1); end;

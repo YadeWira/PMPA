@@ -4,14 +4,14 @@
   and --cpu, which chooses that path. PJA's pjasysinfo, adapted.
 
   The paths: PMPA's mixer (pmpamodel) has plain code and, on x86-64, an
-  SSE4.1 copy. Both give the same bits (selftest checks it); only the
-  speed changes. Which one runs is pmpamodel's UseSse41, set at start from
-  cpuid (PMPA_NOASM=1 turns it off), and here by --cpu. The C hot loops
-  (pmpal3c.c) have no SIMD copy: they run on every path (PMPA_NOC=1 leaves
-  them to Pascal). The covers' JPEG model (PJA 0.6.3's, vendor/pja) picks
-  its own path from cpuid, which PJA_NOASM=1 and PJA_NOAVX2=1 turn off:
-  its switch is not public in that release, so --cpu does not reach it
-  (its paths give the same bits too). }
+  SSE4.1 copy; the covers' JPEG model (PJA's, vendor/pja) plain code,
+  SSE4.1 and an AVX2 copy of version 7's loop (pjav7c.c). Every path gives
+  the same bits (selftest checks it); only the speed changes. Which one
+  runs is pmpamodel's UseSse41 and PJA's GetSimd/SetSimd, set at start from
+  cpuid (PMPA_NOASM=1, PJA_NOASM=1 and PJA_NOAVX2=1 turn them off), and
+  here by --cpu: sse41 is both models' SSE4.1, avx2 that and PJA's AVX2.
+  The C hot loops (pmpal3c.c) have no SIMD copy: they run on every path
+  (PMPA_NOC=1 leaves them to Pascal). }
 unit pmpasysinfo;
 
 {$I pmpa.inc}
@@ -23,10 +23,10 @@ interface
 uses SysUtils, pmpainfo;
 
 type
-  TCpuPath = (cpPlain, cpSse41);
+  TCpuPath = (cpPlain, cpSse41, cpAvx2);
 
 const
-  CPU_PATH_NAMES: array[TCpuPath] of string = ('plain', 'sse41');
+  CPU_PATH_NAMES: array[TCpuPath] of string = ('plain', 'sse41', 'avx2');
   ISSUES_URL = 'https://github.com/YadeWira/PMPA/issues';
 
 var
@@ -71,7 +71,7 @@ implementation
 uses
   {$ifdef UNIX} BaseUnix, {$endif}
   {$ifdef MSWINDOWS} Windows, {$endif}
-  Classes, pmpacodec, pmpacpu, pmpamodel, pmpac;
+  Classes, pmpacodec, pmpacpu, pmpamodel, pmpac, pjamodel, pjav7;
 
 {$ifdef CPUX86_64}
 {$asmmode intel}
@@ -197,6 +197,8 @@ begin
   case p of
     cpPlain: Result := True;
     cpSse41: Result := {$ifdef CPUX86_64} HasSse41 {$else} False {$endif};
+    { AVX2 changes the covers' model alone: PMPA's own has no AVX2 copy }
+    cpAvx2: Result := {$ifdef CPUX86_64} HasSse41 and HasAvx2 {$else} False {$endif};
   else
     Result := False;
   end;
@@ -221,28 +223,35 @@ begin
 end;
 
 function CurrentCpuPath: TCpuPath;
+var sse41, avx2: Boolean;
 begin
-  if UseSse41 then Result := cpSse41 else Result := cpPlain;
+  GetSimd(sse41, avx2);
+  if avx2 then Result := cpAvx2
+  else if sse41 or UseSse41 then Result := cpSse41
+  else Result := cpPlain;
 end;
 
 function SetCpuPath(p: TCpuPath): Boolean;
 begin
   if not CpuPathSupported(p) then Exit(False);
-  UseSse41 := p = cpSse41;
+  UseSse41 := p >= cpSse41;
+  SetSimd(p >= cpSse41, p = cpAvx2);
+  V7Retable;
   Result := True;
 end;
 
-{ the covers' JPEG model's path, as PJA 0.6.3 chooses it }
-function CoversPath: string;
+{ the SIMD copies of the covers' C model in this build: "sse41 avx2", or
+  none (a compiler without them) }
+function CSimdCopies: string;
 begin
-  {$ifdef CPUX86_64}
-  if SysUtils.GetEnvironmentVariable('PJA_NOASM') = '1' then Exit('plain (PJA_NOASM=1)');
-  if not HasSse41 then Exit('plain');
-  if HasAvx2 and (SysUtils.GetEnvironmentVariable('PJA_NOAVX2') <> '1') then Exit('avx2');
-  Result := 'sse41';
-  {$else}
-  Result := 'plain';
-  {$endif}
+  {$ifndef CPUX86_64} Exit('none used (the plain path only)'); {$endif}
+  Result := '';
+  if V7Paths and 1 <> 0 then Result := 'sse41';
+  if V7Paths and 2 <> 0 then begin
+    if Result <> '' then Result := Result + ' ';
+    Result := Result + 'avx2';
+  end;
+  if Result = '' then Result := 'none (the covers'' C model runs plain on every path)';
 end;
 
 function TargetName: string;
@@ -316,7 +325,7 @@ begin
   n.Str('cpu_paths_supported', SupportedPaths);
   n.Num('stream_version', STREAM_VERSION);
   n.Str('c_loops', CLoops);
-  n.Str('covers_jpeg_path', CoversPath);
+  n.Str('covers_c_simd_copies', CSimdCopies);
   n.Num('processors', CpuCount);
   n.Num('default_threads', DefaultThreads);
 end;

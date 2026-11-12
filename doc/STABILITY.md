@@ -27,18 +27,22 @@ Flags past the stored flag, and versions past 1, are refused
 | 1 to 6 | development builds before 0.1.0, never published | every release (`pas/tests/test_codec.pas` decodes each) |
 | 7 | 0.1.0 (bands of 2 MiB, C hot loops) | every release since 0.1.0 |
 | 8 | 0.2.0 and later (version 7, and the JPEG pictures in ID3v2 tags through PJA) | every release since 0.2.0 |
+| 9 | 0.4.0 and later (version 8's layout, the pictures through PJA 0.9.8, which may write streams PJA 0.6 cannot read) | every release since 0.4.0 |
 
 A version past its own is refused as `FutureVersion` before it is decoded,
 never read as something else. A stream version that is published is never
 changed: a new model, a new kind of segment or a new codec for the
 pictures (PNG through PPA, for one) comes as a new version beside these.
-`pmpa selftest` checks that this build still writes 0.2.0's stream for its
-samples and reads 0.1.0's version 7.
+`pmpa selftest` checks that this build writes its own stream for its
+samples, and reads 0.1.0's version 7 and 0.3.x's version 8.
 
-Stream version 8 holds each picture as a PJA codec stream (versions 7, or
-6 with 7 for a JPEG with JPEGs inside it), written by PJA 0.6.x, vendored
-unmodified in `vendor/pja`. PJA froze those stream versions in its 0.9.0. A later PJA in
-`vendor/pja` that wrote other streams would be a new PMPA stream version.
+Stream versions 8 and 9 hold each picture as a PJA codec stream (versions 7, or
+6 with 7 for a JPEG with JPEGs inside it), written by the PJA vendored
+unmodified in `vendor/pja` (0.6.2 in PMPA 0.2.0, 0.6.3 in 0.3.0, 0.9.8 from
+0.4.0: on 55 real covers 0.9.8 writes the very bytes 0.6.3 did, but for a
+JPEG cut short it may write a stream 0.6.3 cannot read: hence version 9). PJA froze
+those stream versions in its 0.9.0. A later PJA in `vendor/pja` that wrote
+other streams would be a new PMPA stream version.
 
 ## The library and 7-Zip
 

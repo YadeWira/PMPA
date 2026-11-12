@@ -30,7 +30,7 @@ PJA's `doc/CLI.md`); what is PMPA's own is said where it differs.
 | `-q`, `--quiet` | only errors (`--stats` lines still come out, each under its file's name: they were asked for) |
 | `--stats` | `a`, `x`, `t`: after each file, where its time went (below), its threads and its bands; then a line for the run: files, bytes in and out, time, MB/s of the originals |
 | `--json` | `a`, `x`, `t`, `info`, `list`: one JSON object a line for each file, in the order of the inputs, then `{"summary": ...}`; errors still go to stderr as well |
-| `--cpu=PATH` | the model's SIMD path: `plain` or `sse41`, before or after the command (`--cpu plain`, with a space, is refused naming `--cpu=plain`). A path this processor or this build lacks is refused (exit 2) naming those it has. Every path writes and reads the same bytes: only the speed changes (`selftest` proves it; `selftest --cpu=PATH` checks that path alone) |
+| `--cpu=PATH` | the models' SIMD path: `plain`, `sse41` or `avx2`, before or after the command (`--cpu avx2`, with a space, is refused naming `--cpu=avx2`). A path this processor or this build lacks is refused (exit 2) naming those it has. Every path writes and reads the same bytes: only the speed changes (`selftest` proves it; `selftest --cpu=PATH` checks that path alone) |
 | `-o REPORT` | `report`: the file the report goes to (never over an existing one) |
 | `--with-file` | `report`: also copy the file beside the report as `pmpa-report-NAME`, to attach if you choose to (without FILE it is refused: exit 2) |
 | `-r N` | `bench`: runs of each measure, the best one counts (3 by default) |
@@ -102,8 +102,8 @@ A plain-text bug report, to stdout or to `-o`'s file:
 
 - PMPA: version, commit, build date, FPC's version, the C compiler, the
   target; the system, the processor's name and features, the SIMD path in
-  use and those it could take, whether the C loops run, the path the
-  covers' JPEG model takes, the processors, the threads;
+  use and those it could take, whether the C loops run, the SIMD copies of
+  the covers' C model, the processors, the threads;
 - the command line, each path cut to its name (an option's value too:
   `--output-dir=NAME`; a path after `--` that starts with a dash as well);
 - for FILE: its size, BLAKE3-128, what PMPA does with it (`a`'s dry run,
@@ -138,23 +138,24 @@ temporary folder and is deleted: nothing is written beside the inputs. A
 
 ### `pmpa selftest`
 
-The binary carries five small samples (`pas/pmpaselftest.inc`, written by
+The binary carries six small samples (`pas/pmpaselftest.inc`, written by
 `pas/tests/gen_selftest.pas` from `tests/`): the start of a Layer I, a
 Layer II and a Layer III file with CRCs, an MP3 whose ID3v2 tag holds a JPEG
-that goes through PJA, and the Layer III one again as stream version 7,
-the stream 0.1.0 wrote; and the `.pmpa` each one has to give. On every SIMD
+that goes through PJA, the Layer III one again as stream version 7, the
+stream 0.1.0 wrote, and the cover one as the version 8 `.pmpa` 0.3.x wrote
+(`pas/tests/selftest_v8.pmpa`); and the `.pmpa` each one has to give. On every SIMD
 path the processor has, with one thread and with two (two decode the
 stream while it is encoded), each is compressed, compared byte for byte
 with its expected `.pmpa` (whose BLAKE3-128 it prints), and extracted back;
-the version 7 one is only extracted. `--cpu=PATH` checks that path alone.
+the version 7 and 8 ones are only extracted. `--cpu=PATH` checks that path alone.
 Exit 0 only if every check passed. CI runs it on every platform, and
 `run_tests.sh` checks that the include is the codec's current output.
 
 ### `pmpa --version`
 
 ```
-pmpa 0.3.0
-commit: 074217f
+pmpa 0.4.0
+commit: 0000000
 built: 2026/11/11
 fpc: 3.2.2
 c_compiler: gcc 14.2.0
@@ -162,11 +163,11 @@ target: x86_64-linux
 system: Linux 6.12.115+deb13.1-amd64 x86_64
 cpu: Intel(R) Xeon(R) CPU E5-2697A v4 @ 2.60GHz
 cpu_features: sse2 sse4.1 avx2
-cpu_path: sse41
-cpu_paths_supported: plain sse41
-stream_version: 8
+cpu_path: avx2
+cpu_paths_supported: plain sse41 avx2
+stream_version: 9
 c_loops: on (Layer III values, Layer I and II samples)
-covers_jpeg_path: avx2
+covers_c_simd_copies: sse41 avx2
 processors: 64
 default_threads: 8
 ```
@@ -178,16 +179,17 @@ tag's commit); a build without it says `commit:` and nothing.
 ### `--cpu=PATH`
 
 PMPA's mixer (`pas/pmpamodel.pas`) has plain code and, on x86-64, an
-SSE4.1 copy. The path is chosen at start from cpuid (`PMPA_NOASM=1` turns
-the copy off); `--cpu` chooses it instead, to compare speeds or to rule a
-path out when chasing a bug. 32-bit builds have the plain path only. The C
-loops (`pas/pmpal3c.c`, the Layer III values and the Layer I and II
-samples) have no SIMD copy and run on every path (`PMPA_NOC=1` leaves them
-to Pascal: the same streams). The covers' JPEG model is PJA 0.6.3's, which
-picks its own path from cpuid (`PJA_NOASM=1`, `PJA_NOAVX2=1`); that
-release has no public switch for it, so `--cpu` does not reach it, and
-`--version` says which one it takes (`covers_jpeg_path`). Its paths write
-the same bytes too.
+SSE4.1 copy; the covers' JPEG model (PJA's, `vendor/pja`) plain code,
+SSE4.1 and, for its version 7 loop in C, an AVX2 copy. The path is chosen
+at start from cpuid (`PMPA_NOASM=1`, `PJA_NOASM=1` and `PJA_NOAVX2=1` turn
+the copies off); `--cpu` chooses it instead, to compare speeds or to rule a
+path out when chasing a bug: `sse41` is both models' SSE4.1, `avx2` that
+and PJA's AVX2 (since 0.4.0, with PJA 0.9.8; before, `--cpu` did not reach
+the covers' model). 32-bit builds have the plain path only. The C loops
+(`pas/pmpal3c.c`, the Layer III values and the Layer I and II samples)
+have no SIMD copy and run on every path (`PMPA_NOC=1` leaves them to
+Pascal: the same streams). `--version` says which copies of the covers' C
+model this build has (`covers_c_simd_copies`).
 
 ### `--stats`
 

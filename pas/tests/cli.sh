@@ -362,7 +362,7 @@ check "--json: original_size and pmpa_size in a, x, t, list; info's stream_versi
 import json, sys
 o = [json.loads(l) for l in open(sys.argv[1])]
 for k in range(4): assert o[k][\"original_size\"] == 8064 and o[k][\"pmpa_size\"] > 0, o[k]
-assert o[4][\"pmpa\"][\"stream_version\"] == 8, o[4]' '$W/jn.txt'"
+assert o[4][\"pmpa\"][\"stream_version\"] == 9, o[4]' '$W/jn.txt'"
 check "--json is not for bench: rc 2" test "$(rc "$PMPA" bench --json "$W/g.pmpa")" -eq 2
 
 echo "--- bench"
