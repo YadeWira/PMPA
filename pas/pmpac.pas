@@ -21,6 +21,9 @@ interface
 function CInUse: Boolean;
 { the C compiler pmpal3c.c was built with: "gcc 14.2.0", "clang 19.1.7" }
 function CCompilerName: string;
+{ the C in use whatever PMPA_NOC says (libpmpa: a host's environment must
+  not change anything; the streams are the same either way) }
+procedure UseCLoops;
 
 implementation
 
@@ -92,14 +95,17 @@ begin
   Result := StrPas(pmpac_compiler);
 end;
 
+procedure UseCLoops;
+begin
+  if not LayoutOk then Exit;
+  ValuesC := @pmpac_values;
+  SamplesC := @pmpac_samples;
+  inUse := True;
+end;
+
 initialization
   t.putFn := @Put; t.getFn := @Get;
   t.stretchT := @STRETCH_T[0]; t.recip := @RECIP[0]; t.reciprocal := @RECIPROCAL[0];
   pmpac_tables(t);
-  if LayoutOk and (GetEnvironmentVariable('PMPA_NOC') <> '1') then
-  begin
-    ValuesC := @pmpac_values;
-    SamplesC := @pmpac_samples;
-    inUse := True;
-  end;
+  if GetEnvironmentVariable('PMPA_NOC') <> '1' then UseCLoops;
 end.

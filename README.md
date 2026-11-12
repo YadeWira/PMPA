@@ -149,11 +149,23 @@ MP2 one. zpaq-std's strongest method comes closest, and is the slowest.
 
 ## In 7-Zip and zpaq-std
 
-Not yet. `libpmpa`, a 7-Zip codec in the same file (`-m0=PMPA -m1=LZMA2`),
-and a [zpaq-std](https://github.com/YadeWira/zpaq-std) plugin whose blocks
-any zpaq extracts are planned, as PJA and PPA have them
-([library][wLib], [zpaq-std plugin][wPlugin]). Until then, compress the
-files with `pmpa` before archiving them (above).
+**7-Zip** and [7-Zip-zstd](https://github.com/mcmilk/7-Zip-zstd) (since
+0.5.0): put `libpmpa`'s `pmpa.dll` (or `pmpa.so`; in each release, x64 for
+64-bit 7-Zip, x86 for 32-bit) in the `Codecs` folder next to 7-Zip, and
+
+```sh
+7z a -m0=PMPA -m1=LZMA2 music.7z music/      # 7-Zip-zstd: -m1=zstd
+```
+
+(in 7-Zip's window: **Parameters** `0=PMPA 1=LZMA2`). PMPA goes first in
+the chain as a filter: it recompresses the runs of MPEG audio frames in
+the solid block, tags included, and passes every other byte on. Extracting
+needs the plugin too. On the three sets above: 82.83%, 79.60% and 69.19%,
+where 7-Zip alone makes 95.72%, 95.01% and 87.35% ([details][wLib]).
+
+**[zpaq-std](https://github.com/YadeWira/zpaq-std)**: not yet; a plugin
+whose blocks any zpaq extracts is planned, as PJA and PPA have them
+([zpaq-std plugin][wPlugin]).
 
 ## Reporting a bug
 

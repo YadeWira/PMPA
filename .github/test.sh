@@ -62,6 +62,56 @@ done
 [ "$n" -ge 41 ] || { echo "FAIL: only $n samples"; exit 1; }
 echo "$n samples back byte for byte"
 
+echo "== libpmpa"
+sh pas/lib/build.sh "$OUT/lib" > "$OUT/lib.log" 2>&1 || { cat "$OUT/lib.log"; echo "FAIL: libpmpa did not build"; exit 1; }
+LIBF=$(tail -1 "$OUT/lib.log")
+# its C objects call no library (the DLL has no C runtime); their own
+# symbols aside (pmpa7z.o calls pmpafilter.o), and the GOT the linker makes
+if [ "$(uname -s)" = Linux ] && command -v nm > /dev/null; then
+  nm "$OUT"/lib/c/*.o | awk '$2 ~ /^[TDBR]$/ {print $3}' | sort -u > "$OUT/lib/defined.txt"
+  nm -u "$OUT"/lib/c/*.o | awk 'NF {print $NF}' | grep -v ':$' | grep -vx '_GLOBAL_OFFSET_TABLE_' | sort -u | comm -23 - "$OUT/lib/defined.txt" > "$OUT/lib/undefined.txt"
+  if [ -s "$OUT/lib/undefined.txt" ]; then cat "$OUT/lib/undefined.txt"; echo "FAIL: libpmpa's C objects need a library"; exit 1; fi
+fi
+# the test finds the library by its rpath alone (on macOS its install name
+# is @rpath/pmpa.dylib, not the path it was built at)
+RP=; case "$(uname -s)" in Linux) RP="-pthread -Wl,-rpath,$(dirname "$LIBF")" ;; Darwin) RP="-Wl,-rpath,$(dirname "$LIBF")" ;; esac
+if [ "$(uname -s)" = Darwin ]; then
+  ID=$(otool -D "$LIBF" | tail -1)
+  [ "$ID" = "@rpath/pmpa.dylib" ] || { echo "FAIL: libpmpa's install name is $ID"; exit 1; }
+fi
+# shellcheck disable=SC2086
+${CC:-cc} -O2 -Ipas/lib pas/lib/test_lib.c -o "$OUT/lib/test_lib$EXE" "$LIBF" $RP
+# the command's settings set here: the library must not take them from the
+# host's environment
+PMPA_NOC=1 PMPA_NOASM=1 "$OUT/lib/test_lib$EXE" tests/mp1/* tests/mp2/* tests/mp3/* tests/covers/* README.md > "$OUT/lib/test.txt" \
+  || { cat "$OUT/lib/test.txt"; echo "FAIL: libpmpa's test"; exit 1; }
+tail -3 "$OUT/lib/test.txt"
+# 7-Zip 23 or later (not p7zip): a copy with the plugin in its Codecs
+# folder (the same word size as the library), an archive written and
+# extracted. Linux: 7-Zip's package; Windows: the 64-bit 7-Zip installed
+# (a 32-bit library: SEVEN32, if set)
+case "$LIBF" in
+  *.dll) SEVEN="/c/Program Files/7-Zip"; SLIB=7z.dll ;;
+  *.so) SEVEN=/usr/lib/7zip; SLIB=7z.so ;;
+  *) SEVEN=; SLIB= ;;
+esac
+case "${CC:-} $FPC" in *-m32*|*i386*|*mingw32*) SEVEN=${SEVEN32:-} ;; esac
+if [ -z "$SEVEN" ] || [ ! -f "$SEVEN/$SLIB" ] || [ ! -f "$SEVEN/7z$EXE" ]; then
+  echo "7-Zip: none of the library's word size here, not tried"
+else
+  Z="$OUT/7z"; rm -rf "$Z"; mkdir -p "$Z/Codecs" "$OUT/7in" "$OUT/7x"
+  cp "$SEVEN/7z$EXE" "$SEVEN/$SLIB" "$Z/"
+  cp "$LIBF" "$Z/Codecs/"
+  cp tests/mp1/* tests/mp2/* tests/mp3/* tests/covers/* README.md "$OUT/7in/"
+  "$Z/7z$EXE" i | grep -q '37F20 PMPA' || { echo "FAIL: 7-Zip does not list PMPA (37F20)"; exit 1; }
+  (cd "$OUT/7in" && "../7z/7z$EXE" a -bso0 -bsp0 -m0=PMPA -m1=LZMA2 ../a.7z .)
+  "$Z/7z$EXE" x -bso0 -bsp0 -o"$OUT/7x" "$OUT/a.7z"
+  for f in "$OUT"/7in/*; do
+    cmp -s "$f" "$OUT/7x/$(basename "$f")" || { echo "FAIL: 7-Zip: $(basename "$f") does not come back"; exit 1; }
+  done
+  echo "7-Zip with the PMPA plugin: every sample back, $(wc -c < "$OUT/a.7z" | tr -d ' ') bytes"
+fi
+
 echo "== the .pmpa files"
 (cd "$OUT/p" && $SHA * | sed 's/ [ *]/  /' | sort) > "$OUT/pmpa.txt"
 $SHA "$OUT/pmpa.txt" | cut -c1-64 > hash.txt

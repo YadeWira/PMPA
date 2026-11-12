@@ -91,14 +91,24 @@ jobs:
         run: |
           V=${TAG#v}; P=${{ matrix.platform }}
           case $P in windows-*) EXE=.exe ;; *) EXE= ;; esac
-          D=pmpa-$V-$P
-          mkdir -p dist "$D"
+          case $P in windows-*) LIB=pmpa.dll ;; macos-*) LIB=pmpa.dylib ;; *) LIB=pmpa.so ;; esac
+          D=pmpa-$V-$P; LIBP=pmpa-$V-lib-$P
+          mkdir -p dist "$D" "$LIBP"
           cp build/rel/pmpa$EXE README.md LICENSE NOTICE doc/CLI.md "$D/"
-          case $P in
-            windows-*) 7z a -tzip -bso0 "dist/$D.zip" "$D" ;;
-            macos-*) tar --uid 0 --gid 0 -czf "dist/$D.tar.gz" "$D" ;;
-            *) tar --owner=0 --group=0 -czf "dist/$D.tar.gz" "$D" ;;
-          esac
+          # libpmpa: the C library and 7-Zip / 7-Zip-zstd plugin
+          cp build/rel/lib/$LIB pas/lib/pmpa.h doc/LIBRARY.md LICENSE NOTICE "$LIBP/"
+          # PJA's codec is inside (the covers): its license and notices
+          for d in "$D" "$LIBP"; do
+            cp vendor/pja/LICENSE "$d/LICENSE-PJA"
+            cp vendor/pja/NOTICE "$d/NOTICE-PJA"
+          done
+          for d in "$D" "$LIBP"; do
+            case $P in
+              windows-*) 7z a -tzip -bso0 "dist/$d.zip" "$d" ;;
+              macos-*) tar --uid 0 --gid 0 -czf "dist/$d.tar.gz" "$d" ;;
+              *) tar --owner=0 --group=0 -czf "dist/$d.tar.gz" "$d" ;;
+            esac
+          done
           ls -l dist
       - uses: actions/upload-artifact@v4
         with:

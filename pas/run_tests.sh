@@ -15,6 +15,15 @@ mkdir -p "$OUT"
 echo "== source guards"
 python3 pas/collisions.py pas
 
+echo "== the 7-Zip plugin's version is PMPA_VERSION"
+python3 -I -c "
+import re, sys
+v = re.search(r\"PMPA_VERSION = '(\\d+)\\.(\\d+)\\.(\\d+)'\", open('pas/pmpacodec.pas').read()).groups()
+m = re.search(r'\\((\\d+)u << 16\\) \\| (\\d+)u; }   /\\* 0', open('pas/lib/pmpa7z.c').read()).groups()
+want = (v[0], v[1] + v[2])
+sys.exit(0 if (m[0], m[1]) == want else 'pmpa7z.c says %s.%s, PMPA_VERSION %s' % (m[0], m[1], '.'.join(v)))" || exit 1
+echo "pmpa7z.c: the version is PMPA_VERSION"
+
 echo "== the C part"
 sh pas/build_c.sh "$OUT/c" > "$OUT/cc.log" 2>&1 || { cat "$OUT/cc.log"; exit 1; }
 
