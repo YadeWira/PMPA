@@ -38,8 +38,8 @@ samples, and reads 0.1.0's version 7 and 0.3.x's version 8.
 
 Stream versions 8 and 9 hold each picture as a PJA codec stream (versions 7, or
 6 with 7 for a JPEG with JPEGs inside it), written by the PJA vendored
-unmodified in `vendor/pja` (0.6.2 in PMPA 0.2.0, 0.6.3 in 0.3.0, 0.9.8 from
-0.4.0: on 55 real covers 0.9.8 writes the very bytes 0.6.3 did, but for a
+unmodified in `vendor/pja` (0.6.2 in PMPA 0.2.0, 0.6.3 in 0.3.0, 0.9.8 in
+0.4.0 and 0.5.0, 0.9.9 from 0.5.1, which writes 0.9.8's bytes: on 55 real covers 0.9.8 writes the very bytes 0.6.3 did, but for a
 JPEG cut short it may write a stream 0.6.3 cannot read: hence version 9). PJA froze
 those stream versions in its 0.9.0. A later PJA in `vendor/pja` that wrote
 other streams would be a new PMPA stream version.

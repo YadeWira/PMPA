@@ -1,8 +1,40 @@
-# PJA 0.9.8: the zpaq-std plugin, vendored
+# PJA 0.9.9: the zpaq-std plugin, vendored
 
-PJA (https://github.com/YadeWira/PJA), tag `v0.9.8`, commit `e89a500`:
+PJA (https://github.com/YadeWira/PJA), tag `v0.9.9`, commit `62bf00c`:
 only the sources the zpaq-std plugin is built from. MIT (`LICENSE`);
 `NOTICE` has the third-party notes.
+
+## What is new in 0.9.9: +rcmd, and BLAKE3 from pBLAKE3
+
+The 31 codecs write and read the same streams with the same ZPAQL; what
+each takes (detect = 1) is 0.9.8's.
+
+- **zpaq-std 2.9.0's `+rcmd`**: `zpaqstd_detect_v1` answers **2** for a file
+  of the codec's format that it does not take: a JPEG (`FF D8 FF`, not
+  JPEG-LS) for the JPEG codecs (pja, pjax, pja7, pjax7, pjall and their z,
+  o and 8), a JPEG-LS file for pjals and pjalsx (and theirs), a JPEG 2000
+  file for pja2k. Each codec's card (`ZS_DATA_INFO`) has two more keys:
+
+      JPEG       fallback_ma=flzma2:10,uflzma2:11,lzma:9,lz:9,zstd:19   fallback_m=3,4,5,2,1
+      JPEG-LS    fallback_ma=flzma2:10,uflzma2:11,lz6:15,zstd:19,lzma:9 fallback_m=3,4,5,2,1
+      JPEG 2000  fallback_ma=zstd:19,deflate:12,zxc:7,flzma2:10,lz6:15  fallback_m=1,2,3,4,5
+
+  How they were measured: PJA's `doc/CODEC.md`, "zpaq-std +rcmd". zpaq-std
+  before 2.9.0 reads 2 as 0: 2.7.2 and 2.8.0 write the same archive, byte
+  for byte, with this plugin as with 0.9.8's.
+- **BLAKE3** (the plugin's verdict cache keys files by size and BLAKE3) now
+  comes from pBLAKE3 v0.2.0 (https://github.com/YadeWira/pBLAKE3), a fixed
+  copy: `pas/pjablake3.pas` and the new **`pas/b3chunks.c`**, which
+  `pas/build_c.sh` compiles and `pjav7.pas` links (`{$L b3chunks.o}`). The
+  same hash; its chunks 4 at a time (SSE2, NEON), 8 (AVX2) or 16
+  (AVX-512), chosen at run time. `pjasysc.c` no longer has BLAKE3.
+- The plugin now uses `pas/pjaj2k.pas` directly (`J2kKind`, for detect 2).
+
+Checked: built from this directory alone, the plugin lists the thirty-one
+codecs, pja2k at 30, and PJA's plugin probe passes on `tests/j2k`,
+`tests/jpg` and `tests/jls` (detect 1, 2 and 0 as above). With zpaq-std
+2.9.0-rc4 and rc5, `-sa -rcmd` on a mixed folder: every file back with the
+plugin, without it, with zpaq 7.15, and on Windows 10 x64 and x86.
 
 ## What is new in 0.9.8
 
@@ -186,10 +218,10 @@ FreePascal 3.2.2 and a C compiler (clang, the faster, or gcc) for the same
 target. The C first (`pas/build_c.sh <dir> [flags]`: `-O3 -fwrapv
 -ffp-contract=off -fno-stack-protector`, and `-fno-builtin` with clang or
 `-fno-tree-loop-distribute-patterns` with gcc), then fpc with `-Fo<dir>` so `pjav7.pas`'s `{$L pjav7c.o}` and
-`{$L pjasysc.o}` find the objects. From this directory:
+`{$L pjasysc.o}` and `{$L b3chunks.o}` find the objects. From this directory:
 
 ```sh
-export PJA_COMMIT=e89a500
+export PJA_COMMIT=62bf00c
 ```
 
 Linux x86_64 (position-independent C, `-fPIC`, and `-Cg`):

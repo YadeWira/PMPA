@@ -1,12 +1,14 @@
-PJA 0.9.8 (tag v0.9.8, commit e89a500), https://github.com/YadeWira/PJA,
-from the vendor tarball pja-0.9.8-zpaqstd.tar.gz of its release (sha256
-f777a59f904be361e337b3fcdf285d9647b9a2d70659adf5c668d186d51c5cdc, as its
-SHA256SUMS says; each of its 42 source and license files also compared
-with the tag's: all the same), copied unmodified. Before it, PJA 0.6.3
-(PMPA 0.3.x) and 0.6.2 (PMPA 0.2.0).
+PJA 0.9.9 (tag v0.9.9, commit 62bf00c), https://github.com/YadeWira/PJA,
+from the vendor tarball pja-0.9.9-zpaqstd.tar.gz of its release (sha256
+41965cdf5ef4dc18abde7ea7684be3ef414d9bc15ce22bda83d00b6e19de7b74, as its
+SHA256SUMS says; each of its 43 source and license files also compared
+with the tag's: all the same), copied unmodified. 0.9.9 writes the same
+streams as 0.9.8; its BLAKE3 comes from B3's pBLAKE3 (pas/b3chunks.c, the
+same hash). Before it, PJA 0.9.8 (PMPA 0.4.0 to 0.5.0), 0.6.3 (0.3.x) and
+0.6.2 (0.2.0).
 
-On the 55 real MP3 covers of PMPA's measurement set, 0.9.8 writes the very
-same streams as 0.6.3: PMPA's stream version stays 8. What PMPA gains: the
+On the 55 real MP3 covers of PMPA's measurement set, 0.9.8 (and 0.9.9)
+write the very same streams as 0.6.3: PMPA's stream version stays 8. What PMPA gains: the
 fixes since 0.6.3, and pjamodel.GetSimd/SetSimd with pjav7.V7Retable, so
 that pmpa --cpu reaches the covers' model (plain, sse41, avx2).
 

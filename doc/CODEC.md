@@ -471,3 +471,7 @@ refuses a version 9 stream as a later version (`FutureVersion`), never
 as damage. Version 8 streams, as 0.2 and 0.3 wrote them, are read as they
 were: PJA 0.9.8 reads 0.6.x's streams (`pmpa selftest` extracts a version 8
 `.pmpa` written by 0.3.x, `pas/tests/selftest_v8.pmpa`).
+
+PMPA 0.5.1 vendors PJA 0.9.9 (its BLAKE3 from B3's pBLAKE3, the same
+hash): on the 55 covers and the 53 samples of `tests/`, the very `.pmpa`
+files 0.5.0 wrote with PJA 0.9.8. Still version 9.
