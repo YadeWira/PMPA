@@ -349,6 +349,6 @@ HRESULT pmpa7z_GetModuleProp(uint32_t prop, propvariant_t *v) {
   if (!v) return E_INVALIDARG;
   v->vt = VT_EMPTY;
   if (prop == M_INTERFACE_TYPE) { v->vt = VT_UI4; v->v.u32 = 0; }   /* no virtual destructor */
-  else if (prop == M_VERSION) { v->vt = VT_UI4; v->v.u32 = (0u << 16) | 50u; }   /* 0.50 = PMPA 0.5.0, checked against PMPA_VERSION by run_tests.sh */
+  else if (prop == M_VERSION) { v->vt = VT_UI4; v->v.u32 = (0u << 16) | 51u; }   /* 0.51 = PMPA 0.5.1, checked against PMPA_VERSION by run_tests.sh */
   return S_OK;
 }

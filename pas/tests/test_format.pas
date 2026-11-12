@@ -112,13 +112,25 @@ begin
   pr := Unpack(other, High(QWord), back, hx);
   Check((pr.err = ukHashMismatch) and Same(back, orig) and (hx[0] = b[16] xor 1),
      'one bit of the hash: HashMismatch, with the decoded and the expected');
+  { a damaged declared size, larger and smaller than the stream's: with
+    salvage (x --keep-corrupt, issue #1) what the stream gives, never ok;
+    without it never ok either, and smaller is refused without a second
+    decode }
   other := Copy(b, 0, Length(b)); other[8] := other[8] xor 1;
+  pr := Unpack(other, High(QWord), back, hx, 1, True);
+  Check((pr.err = ukSizeMismatch) and Same(back, orig), 'orig_size one off, salvage: ' + pr.Text + ', the stream''s bytes');
   pr := Unpack(other, High(QWord), back, hx);
-  { what the stream gives, for x --keep-corrupt (issue #1), never ok }
-  Check((pr.err = ukSizeMismatch) and Same(back, orig), 'orig_size one off: ' + pr.Text + ', the stream''s bytes');
+  Check(not pr.Ok, 'orig_size one off, no salvage: ' + pr.Text);
   other := Copy(b, 0, Length(b)); other[8] := other[8] xor 4; other[9] := other[9] xor 1;
+  pr := Unpack(other, High(QWord), back, hx, 1, True);
+  Check((pr.err = ukSizeMismatch) and Same(back, orig), 'orig_size off the other way, salvage: ' + pr.Text + ', the same');
   pr := Unpack(other, High(QWord), back, hx);
-  Check((pr.err = ukSizeMismatch) and Same(back, orig), 'orig_size off the other way: ' + pr.Text + ', the same');
+  Check(not pr.Ok, 'orig_size off the other way, no salvage: ' + pr.Text);
+  other := Copy(b, 0, Length(b));
+  i := Length(orig) - 100;
+  other[8] := Byte(i); other[9] := Byte(i shr 8); other[10] := Byte(i shr 16); other[11] := 0;
+  pr := Unpack(other, High(QWord), back, hx);
+  Check((pr.err = ukCodec) and (Length(back) = 0), 'orig_size below the stream''s, no salvage: refused at once, ' + pr.Text);
 
   Writeln('--- header: each error with its name');
   for n := 0 to HEADER_SIZE - 1 do

@@ -58,9 +58,13 @@ function Pack(const original: TBytes; out pmpa: TBytes; const ext: string = ''; 
 { .pmpa -> the original. maxOutput: the largest original accepted. With
   ukHashMismatch, `original` holds what was decoded and `expected` the hash
   it should have had; with ukSizeMismatch, what was decoded, whose length
-  is not the one the .pmpa declares (for x --keep-corrupt); with any other
-  error it is empty. }
-function Unpack(const pmpa: TBytes; maxOutput: QWord; out original: TBytes; out expected: THash16; threads: Integer = 1): TPackResult;
+  is not the one the .pmpa declares; with any other error it is empty.
+  salvage (x --keep-corrupt alone): a stream longer than the declared size
+  is decoded again within --max-output, to keep what it gives; without it
+  that is an error at once (PJA's choice: the second decode is only paid
+  for, and only risks its memory, when someone asked to keep the bytes). }
+function Unpack(const pmpa: TBytes; maxOutput: QWord; out original: TBytes; out expected: THash16; threads: Integer = 1;
+                salvage: Boolean = False): TPackResult;
 
 implementation
 
@@ -110,7 +114,8 @@ begin
   if not Result.fmt.Ok then begin pmpa := nil; Result.err := ukFormat; end;
 end;
 
-function Unpack(const pmpa: TBytes; maxOutput: QWord; out original: TBytes; out expected: THash16; threads: Integer = 1): TPackResult;
+function Unpack(const pmpa: TBytes; maxOutput: QWord; out original: TBytes; out expected: THash16; threads: Integer;
+                salvage: Boolean): TPackResult;
 var p: TPmpa; actual: THash16; cap: QWord;
 begin
   original := nil;
@@ -129,7 +134,7 @@ begin
       #1). Decoded again with the caps a size would have had (the user's
       --max-output, and the format's ratio to the payload), so that
       --keep-corrupt has what the stream gives; it is a size mismatch. }
-    if Result.dec = dsTooBig then
+    if salvage and (Result.dec = dsTooBig) then
     begin
       cap := QWord(Length(p.payload)) * MAX_EXPANSION_RATIO;
       if cap > maxOutput then cap := maxOutput;
